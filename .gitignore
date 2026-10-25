@@ -1,0 +1,8 @@
+# The models and animations are third-party and NOT redistributable -- two
+# carry Sketchfab Standard, two are NonCommercial, two lost their licence
+# metadata, and the character and its animations are Mixamo's. The site serves
+# them; this repository does not. Run ./fetch-assets.sh to pull them.
+#
+# tex/ is committed: ambientCG's maps are CC0.
+models/
+fbx/

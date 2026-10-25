@@ -1,0 +1,3616 @@
+<meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Oswald:wght@300;400;600;700&display=swap">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Browser Zombies</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/utils/SkeletonUtils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/fflate@0.6.9/umd/index.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/FBXLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/ColladaLoader.js"></script>
+<style>
+/* Touch control styling: Kino der Toten, Luckey Faraday, MIT. */
+#touch-controls[hidden], .touch-only { display: none; }
+/* Faraday's control set covers a game with grenades, claymores, monkey bombs,
+   alt fire and crouch. This one has none of those, and the buttons did nothing
+   but take up the top of a phone screen. */
+.touch-toolbar, button[data-touch="crouch"] { display: none !important; }
+/* Phone HUD. The desktop layout puts ammo bottom-right, which is exactly where
+   the fire button lands, and the score top-right under the pause button. On a
+   touch screen the readouts stack down the right instead, clear of both, and
+   everything shrinks to suit the smaller screen. */
+body.touch-mode .round { top: calc(env(safe-area-inset-top,0px) + 10px); left: 14px; }
+body.touch-mode .round b { font-size: 30px; }
+body.touch-mode .pts { top: calc(env(safe-area-inset-top,0px) + 66px); right: 14px; }
+body.touch-mode .pts b { font-size: 23px; }
+body.touch-mode .pts span { font-size: 8px; letter-spacing: 2px; }
+body.touch-mode .gun { top: calc(env(safe-area-inset-top,0px) + 112px); bottom: auto; right: 14px; }
+body.touch-mode .gun b { font-size: 21px; }
+body.touch-mode .gun i { font-size: 13px; }
+body.touch-mode .gun span { font-size: 9px; letter-spacing: 2px; }
+/* The use prompt has to clear the fire button, which reaches 158px up. */
+body.touch-mode .buy { bottom: calc(env(safe-area-inset-bottom,0px) + 206px); font-size: 13px; }
+body.touch-mode .toast { font-size: 24px; letter-spacing: 4px; top: 38%; }
+/* Landscape on a phone is 375px tall: a prompt 206px off the bottom lands in
+   the middle of the screen. */
+@media (max-height: 520px) {
+  body.touch-mode .buy { bottom: calc(env(safe-area-inset-bottom,0px) + 120px); }
+  body.touch-mode .gun { top: calc(env(safe-area-inset-top,0px) + 104px); }
+  body.touch-mode .toast { font-size: 20px; top: 32%; }
+}
+body.touch-mode .touch-only { display: block; }
+body.touch-mode .touch-only[hidden] { display: none; }
+body.touch-mode { overscroll-behavior: none; -webkit-user-select: none; user-select: none; }
+body.touch-mode canvas { touch-action: none; }
+/* A canvas left in normal flow can retain its old landscape width during
+   rotation, making mobile browsers shrink the entire page to fit it. */
+body.touch-mode > canvas { position: fixed; inset: 0; width: 100% !important; height: 100% !important; }
+#touch-controls {
+  --touch-size: 56px;
+  --touch-left: max(18px, env(safe-area-inset-left));
+  --touch-right: max(18px, env(safe-area-inset-right));
+  --touch-bottom: max(18px, env(safe-area-inset-bottom));
+  --fe-ui: Arial, sans-serif; --fe-accent: #e1c399;
+  position: fixed; inset: 0; z-index: 6; pointer-events: none;
+  color: #eaf9f2; font: 600 10px/1 var(--fe-ui); letter-spacing: .08em;
+  -webkit-touch-callout: none;
+}
+#touch-controls [data-touch], #touch-controls button { touch-action: none; pointer-events: auto; }
+#touch-controls.touch-disabled [data-touch] { pointer-events: none; opacity: .35; }
+.touch-look { position: absolute; inset: 0 0 0 44%; }
+.touch-move { position: absolute; left: var(--touch-left); bottom: var(--touch-bottom); width: 40%; height: 55%; }
+.touch-stick {
+  position: absolute; left: 92px; bottom: 12px; width: 136px; height: 136px;
+  margin-left: -68px; border: 1px solid #d9f8ec55; border-radius: 50%;
+  background: radial-gradient(circle, #b7f9d909 46%, #b7f9d915 47%, #b7f9d903 69%);
+  box-shadow: inset 0 0 18px #0003; pointer-events: none;
+}
+.touch-stick[style*="top:"] { margin-top: -68px; }
+.touch-stick span { position: absolute; bottom: -17px; width: 100%; text-align: center; color: #d6ebe5ad; font-size: 9px; }
+.touch-stick::before { content: '⌃'; position: absolute; top: -18px; width: 100%; text-align: center; color: #b8eed7a8; font-size: 22px; }
+.touch-knob {
+  position: absolute; left: 44px; top: 44px; width: 46px; height: 46px;
+  border: 1px solid #e0fff599; border-radius: 50%; background: #ccf7e426; box-shadow: 0 3px 12px #0004;
+}
+.touch-stick.engaged { border-color: #e0fff5a6; }
+.touch-stick.sprinting { border-color: var(--fe-accent); box-shadow: 0 0 12px #7fffc422; }
+.touch-stick.sprinting span { color: var(--fe-accent); }
+.touch-button {
+  position: absolute; width: var(--touch-size); height: var(--touch-size);
+  display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 5px;
+  border-radius: 50%; border: 1px solid #dbf5ec66; background: #06131b70;
+  color: #edf9f5; font: inherit; text-shadow: 0 1px 4px #000;
+  -webkit-tap-highlight-color: transparent; padding: 0;
+}
+.touch-button svg { width: 23px; height: 23px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+.touch-button span { pointer-events: none; font-size: 9px; }
+.touch-button.pressed, .touch-button:active { border-color: var(--fe-accent); color: var(--fe-accent); background: #24533cd9; }
+.touch-button:focus-visible { outline: 2px solid var(--fe-accent); outline-offset: 4px; }
+.touch-fire { width: 82px; height: 82px; right: calc(var(--touch-right) + 69px); bottom: calc(var(--touch-bottom) + 76px); border: 2px solid #effff6a6; background: #0b202b66; }
+.touch-fire svg { width: 31px; height: 31px; }
+.touch-aim { right: calc(var(--touch-right) + 167px); bottom: calc(var(--touch-bottom) + 62px); }
+.touch-jump { right: var(--touch-right); bottom: calc(var(--touch-bottom) + 92px); }
+.touch-crouch { right: calc(var(--touch-right) + 14px); bottom: calc(var(--touch-bottom) + 20px); }
+.touch-reload { right: calc(var(--touch-right) + 94px); bottom: var(--touch-bottom); }
+.touch-pause, .touch-scores { top: max(12px, env(safe-area-inset-top)); width: 46px; height: 46px; border-radius: 12px; }
+.touch-pause { right: var(--touch-right); }
+.touch-scores { right: calc(var(--touch-right) + 56px); }
+.touch-hint { position: absolute; right: calc(var(--touch-right) + 22px); bottom: calc(var(--touch-bottom) + 178px); color: #d6ebe59c; font-size: 9px; text-shadow: 0 1px 5px #000; }
+.touch-settings { width: min(360px, 90vw); font-size: 12px; }
+.touch-settings label { display: flex; align-items: center; gap: 12px; }
+.touch-settings input { flex: 1; min-width: 80px; min-height: 44px; accent-color: var(--fe-accent); }
+.touch-settings select { flex: 1; min-width: 0; min-height: 44px; margin-left: auto; padding: 0 10px; border: 1px solid #b7dec955; border-radius: 5px; background: #14252e; color: #edf9f5; font: inherit; font-size: 16px; touch-action: manipulation; }
+.touch-settings output { min-width: 32px; }
+.touch-settings p { margin: 4px 0; color: #cddfe7a8; }
+
+.touch-use { right: calc(var(--touch-right) + 170px); bottom: var(--touch-bottom); }
+.touch-melee { right: calc(var(--touch-right) + 168px); bottom: calc(var(--touch-bottom) + 136px); }
+.touch-toolbar { position: absolute; top: max(10px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); display: flex; gap: 5px; }
+.touch-toolbar .touch-button { position: static; width: 52px; height: 44px; border-radius: 9px; }
+.touch-toolbar .touch-button span { font-size: 8px; letter-spacing: 0; }
+.touch-settings { width: 100%; max-width: 420px; margin-top: 16px; line-height: 1.6; }
+.touch-settings button { min-height: 44px; padding: 8px 16px; background: #20272b; border: 1px solid #889392; color: #e7ecea; }
+body.touch-mode #menu { align-items: flex-start; padding: max(18px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left)); touch-action: pan-y; overscroll-behavior: contain; }
+body.touch-mode .menu-content, body.touch-mode #menu .panel { margin: auto; flex-shrink: 0; width: min(560px, 100%); max-width: 100%; }
+body.touch-mode #menu button, body.touch-mode #menu a { min-height: 44px; touch-action: manipulation; }
+body.touch-mode #menu a { display: inline-flex; align-items: center; }
+body.touch-mode #start, body.touch-mode #restart, body.touch-mode #loading { max-width: 100%; }
+body.touch-mode .menu-controls, body.touch-mode .menu-side, body.touch-mode .controls, body.touch-mode #controls-hint, body.touch-mode .hint { display: none; }
+body.touch-mode #top { top: max(12px, env(safe-area-inset-top)); left: max(12px, env(safe-area-inset-left)); max-width: 22%; font-size: 8px; letter-spacing: 1px; pointer-events: none; }
+body.touch-mode #location { font-size: 13px; margin-top: 5px; }
+body.touch-mode #round-panel { top: 70px; left: 12px; bottom: auto; pointer-events: none; }
+body.touch-mode #round { font-size: 25px; }
+body.touch-mode #remaining { font-size: 8px; }
+body.touch-mode #player-panel { top: 68px; left: 104px; bottom: auto; min-width: 0; pointer-events: none; }
+body.touch-mode .points { font-size: 22px; }
+body.touch-mode .health-track { width: 90px; margin-top: 5px; }
+body.touch-mode #weapon-panel { top: 65px; right: 12px; bottom: auto; max-width: 180px; pointer-events: none; }
+body.touch-mode #weapon-name { font-size: 10px; }
+body.touch-mode #ammo { margin-top: 3px; gap: 7px; }
+body.touch-mode #mag { font-size: 28px; }
+body.touch-mode #grenades { font-size: 8px; letter-spacing: .3px; }
+body.touch-mode #objective { top: 130px; left: 12px; max-width: 30%; font-size: 9px; }
+body.touch-mode #prompt { top: 48%; left: 50%; width: min(340px, 82%); transform: translateX(-50%); font-size: 12px; pointer-events: none; }
+body.touch-mode #toast, body.touch-mode #notice { top: 34%; font-size: 12px; width: 80%; text-align: center; pointer-events: none; }
+body.touch-mode #notice { left: 10%; }
+body.touch-mode #announcement { top: 28%; min-width: 0; width: 80%; }
+body.touch-mode #announcement-title { font-size: 25px; }
+body.touch-mode #effects { bottom: auto; top: 155px; font-size: 10px; pointer-events: none; }
+body.touch-mode .powerup-timer img { width: 25px; height: 25px; }
+body.touch-mode .location { top: 12px; left: 12px; max-width: 23%; }
+body.touch-mode .location .eyebrow { font-size: 8px; }
+body.touch-mode .location strong { font-size: 13px; }
+body.touch-mode .systems { top: 62px; right: 12px; gap: 1px; font-size: 8px; }
+body.touch-mode .round-display { top: 72px; left: 12px; bottom: auto; }
+body.touch-mode .round-display strong { font-size: 14px; }
+body.touch-mode #hud #round { font-size: 14px; line-height: 1.3; }
+body.touch-mode .round-display span { font-size: 8px; }
+body.touch-mode .vitals { top: 108px; left: 12px; bottom: auto; }
+body.touch-mode .vitals strong { font-size: 21px; }
+body.touch-mode .vitals span { font-size: 9px; }
+body.touch-mode .ammunition { top: 111px; right: 12px; bottom: auto; max-width: 180px; }
+body.touch-mode .ammunition strong { font-size: 24px; }
+body.touch-mode .ammunition span { font-size: 9px; }
+body.touch-mode #hud #perks { top: 114px; left: 92px; bottom: auto; gap: 4px; }
+body.touch-mode #hud #perks span { width: 24px; height: 24px; font-size: 8px; }
+body.touch-mode #equipment { top: 177px; right: 12px; bottom: auto; font-size: 9px; }
+body.touch-mode #hazard { top: 30%; font-size: 11px; }
+body.touch-mode #oxygen { bottom: auto; top: 42%; width: 240px; font-size: 10px; }
+body.touch-mode #journal { top: 58px; left: 50%; transform: translateX(-50%); padding: 12px; width: min(390px, 85vw); font-size: 12px; }
+body.touch-mode #journal p:last-child { font-size: 10px; }
+@media (max-height: 500px) {
+  body.touch-mode #menu h1 { font-size: 42px; }
+  body.touch-mode #menu .chapter, body.touch-mode #menu .eyebrow { margin: 10px 0; }
+  body.touch-mode .tagline, body.touch-mode .intro { margin: 10px 0; font-size: 14px; }
+  body.touch-mode .description, body.touch-mode .preview, body.touch-mode .local-note { display: none; }
+  body.touch-mode #menu #start { padding: 14px 18px; }
+  body.touch-mode .touch-settings { margin-top: 10px; font-size: 11px; }
+}
+@media (orientation: portrait) {
+  #touch-controls { --touch-left: max(8px, env(safe-area-inset-left)); --touch-right: max(10px, env(safe-area-inset-right)); --touch-size: 50px; }
+  .touch-stick { left: 60px; bottom: 30px; width: 116px; height: 116px; margin-left: -58px; }
+  .touch-stick[style*="top:"] { margin-top: -58px; }
+  .touch-knob { left: 34px; top: 34px; }
+  .touch-move { height: 38%; width: 38%; }
+  .touch-aim { right: calc(var(--touch-right) + 130px); bottom: calc(var(--touch-bottom) + 152px); }
+  .touch-fire { right: calc(var(--touch-right) + 43px); bottom: calc(var(--touch-bottom) + 88px); width: 76px; height: 76px; }
+  .touch-jump { bottom: calc(var(--touch-bottom) + 185px); }
+  .touch-crouch { right: var(--touch-right); bottom: calc(var(--touch-bottom) + 18px); }
+  .touch-reload { right: calc(var(--touch-right) + 74px); }
+  .touch-use { right: calc(var(--touch-right) + 66px); bottom: calc(var(--touch-bottom) + 224px); }
+  .touch-melee { right: var(--touch-right); bottom: calc(var(--touch-bottom) + 253px); }
+  .touch-toolbar { top: max(64px, calc(env(safe-area-inset-top) + 56px)); width: min(292px, 96%); flex-wrap: wrap; justify-content: center; }
+  body.touch-mode #top, body.touch-mode .location { max-width: 76%; }
+  body.touch-mode #round-panel, body.touch-mode .round-display { top: 163px; }
+  body.touch-mode #player-panel { top: 163px; }
+  body.touch-mode #weapon-panel { top: 225px; }
+  body.touch-mode #objective { top: 225px; max-width: 42%; }
+  body.touch-mode .vitals { top: 200px; }
+  body.touch-mode .systems { top: 163px; }
+  body.touch-mode .ammunition { top: 210px; }
+  body.touch-mode #hud #perks { top: 260px; left: 12px; }
+  body.touch-mode #equipment { top: 280px; }
+  body.touch-mode #effects { top: 310px; }
+  body.touch-mode #announcement { top: 29%; }
+  body.touch-mode #journal { top: 158px; }
+}
+@media (orientation: portrait) and (max-height: 650px) {
+  body.touch-mode #weapon-panel { top: 157px; max-width: 110px; }
+  body.touch-mode .systems { top: 159px; font-size: 7px; line-height: 1.2; }
+  body.touch-mode .ammunition { top: 194px; }
+  body.touch-mode #equipment { top: 235px; max-width: 120px; }
+  body.touch-mode #notice, body.touch-mode #toast { top: 40%; font-size: 10px; }
+  body.touch-mode #effects { top: 240px; }
+}
+
+
+</style>
+<style>
+/* Layout: canvas fills the viewport, HUD floats over it. One committed theme --
+   a derelict theatre is dark in every light, so there is no second palette. */
+:root{
+  --blood:#9B1F15; --blood-hi:#D4573F; --amber:#E9C271; --ink:#F0E8D9;
+  --faint:#8B8070; --glass:rgba(8,7,6,.5); --edge:rgba(233,194,113,.32);
+  --hud:'Oswald',Impact,'Arial Narrow',sans-serif;
+  color-scheme:dark;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overflow:hidden}
+body{margin:0;background:#050404;color:var(--ink);font-family:var(--hud);
+  overscroll-behavior:none;touch-action:none;user-select:none;-webkit-user-select:none}
+#app{position:fixed;inset:0;overflow:hidden}
+canvas{display:block;width:100%;height:100%}
+
+.hud{position:absolute;inset:0;pointer-events:none}
+.round{position:absolute;top:calc(env(safe-area-inset-top,0px) + 12px);left:16px;
+  font-size:12px;letter-spacing:3px;color:var(--blood-hi);text-transform:uppercase}
+.round b{display:block;font-size:42px;line-height:.92;color:var(--blood);
+  text-shadow:0 0 22px rgba(155,31,21,.9),2px 2px 0 #000}
+.pts{position:absolute;top:calc(env(safe-area-inset-top,0px) + 14px);right:16px;text-align:right}
+.pts b{font-size:32px;color:var(--amber);text-shadow:2px 2px 0 #000;font-variant-numeric:tabular-nums}
+.pts span{display:block;font-size:10px;letter-spacing:3px;color:var(--faint)}
+.gun{position:absolute;right:16px;bottom:calc(env(safe-area-inset-bottom,0px) + 132px);text-align:right}
+.gun b{font-size:30px;color:var(--ink);font-variant-numeric:tabular-nums;text-shadow:2px 2px 0 #000}
+.gun i{font-style:normal;color:var(--faint);font-size:17px}
+.gun span{display:block;font-size:11px;letter-spacing:2.5px;color:var(--faint)}
+.xh{position:absolute;left:50%;top:50%;width:16px;height:16px;margin:-8px 0 0 -8px;opacity:.7}
+.xh::before,.xh::after{content:'';position:absolute;background:var(--ink)}
+.xh::before{left:50%;top:0;width:1.5px;height:100%;margin-left:-.75px}
+.xh::after{top:50%;left:0;height:1.5px;width:100%;margin-top:-.75px}
+.hurt{position:absolute;inset:0;pointer-events:none;opacity:0;transition:opacity .4s;
+  box-shadow:inset 0 0 140px 36px rgba(155,31,21,.9)}
+.hurt.on{opacity:1;transition:opacity .05s}
+.toast{position:absolute;left:50%;top:44%;transform:translate(-50%,-50%);font-size:32px;
+  letter-spacing:6px;color:var(--blood-hi);text-transform:uppercase;text-align:center;
+  text-shadow:0 0 26px #000,2px 2px 0 #000;opacity:0;transition:opacity .5s}
+.toast.on{opacity:1}
+.buy{position:absolute;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 186px);
+  transform:translateX(-50%);font-size:14px;letter-spacing:1.5px;color:var(--amber);
+  background:var(--glass);border:1px solid var(--edge);padding:8px 14px;white-space:nowrap;
+  opacity:0;transition:opacity .18s}
+.buy.on{opacity:1}
+
+.touch{position:absolute;inset:0;pointer-events:none;display:none}
+.touch.on{display:block}
+.stick{position:absolute;left:calc(env(safe-area-inset-left,0px) + 24px);
+  bottom:calc(env(safe-area-inset-bottom,0px) + 32px);width:128px;height:128px;
+  border:2px solid rgba(240,232,217,.18);border-radius:50%;pointer-events:auto}
+.stick i{position:absolute;left:50%;top:50%;width:52px;height:52px;margin:-26px 0 0 -26px;
+  border-radius:50%;background:rgba(240,232,217,.18);border:1px solid rgba(240,232,217,.3)}
+.btn{position:absolute;pointer-events:auto;display:grid;place-items:center;border-radius:50%;
+  background:var(--glass);border:2px solid rgba(240,232,217,.25);color:var(--ink);
+  font-family:var(--hud);letter-spacing:1px;text-transform:uppercase;backdrop-filter:blur(2px)}
+.btn.held{background:rgba(155,31,21,.6);border-color:var(--blood-hi)}
+.btn.fire{right:calc(env(safe-area-inset-right,0px) + 22px);
+  bottom:calc(env(safe-area-inset-bottom,0px) + 38px);width:108px;height:108px;font-size:15px}
+.btn.aim{right:calc(env(safe-area-inset-right,0px) + 144px);
+  bottom:calc(env(safe-area-inset-bottom,0px) + 54px);width:66px;height:66px;font-size:12px}
+.btn.reload{right:calc(env(safe-area-inset-right,0px) + 34px);
+  bottom:calc(env(safe-area-inset-bottom,0px) + 160px);width:60px;height:60px;font-size:11px}
+.btn.knife{right:calc(env(safe-area-inset-right,0px) + 116px);
+  bottom:calc(env(safe-area-inset-bottom,0px) + 150px);width:56px;height:56px;font-size:11px}
+.btn.use{left:calc(env(safe-area-inset-left,0px) + 172px);
+  bottom:calc(env(safe-area-inset-bottom,0px) + 54px);width:60px;height:60px;font-size:12px}
+
+.screen{position:absolute;inset:0;display:grid;place-items:center;text-align:center;z-index:8;
+  background:radial-gradient(ellipse at 50% 44%,rgba(26,11,9,.86),rgba(4,3,3,.985));
+  padding:max(24px,env(safe-area-inset-top)) 22px max(24px,env(safe-area-inset-bottom))}
+/* The pause screen dims nothing: it is there to be paused ON so the frame
+   behind it can be photographed. Text gets a shadow instead of a backdrop. */
+#s-pause{background:none}
+#s-pause .in>*{text-shadow:0 2px 10px rgba(0,0,0,.95),0 0 3px rgba(0,0,0,.9)}
+#s-pause .go{background:rgba(8,6,5,.6);backdrop-filter:blur(2px)}
+/* The id above outranks .go:hover on background but not on colour, so a
+   hovered Resume used to paint near-black text on a near-black box and the
+   label vanished under the cursor. Both states are stated here together. */
+#s-pause .go:hover{background:var(--amber);color:#090706}
+#s-pause .go.alt:hover{background:rgba(240,232,217,.12);color:var(--ink)}
+.screen[hidden]{display:none}
+/* One stack, one rhythm. Everything on a screen is a direct child of .in and
+   spacing comes from the gap, so nothing drifts out of alignment. */
+.in{width:min(420px,100%);display:flex;flex-direction:column;gap:18px;align-items:center}
+.screen h1{margin:0;font-weight:700;font-size:clamp(40px,13vw,62px);line-height:.9;
+  letter-spacing:3px;color:var(--blood);text-transform:none;
+  text-shadow:0 0 34px rgba(155,31,21,.55),0 3px 0 #000}
+.sub{font-size:11px;font-weight:400;letter-spacing:4px;color:var(--faint);text-transform:uppercase}
+.screen p{margin:0;font-size:15px;font-weight:300;line-height:1.55;color:var(--ink);
+  opacity:.74;letter-spacing:.3px;max-width:34ch}
+/* The logo: BROWSER in white over ZOMBIES in blood red. */
+.wm{text-align:center;line-height:.9;margin:0}
+.wm b{display:block;font-weight:700;font-size:clamp(44px,15vw,72px);letter-spacing:1px;color:#fff;
+  text-transform:uppercase;text-shadow:0 3px 0 #000}
+.wm i{display:block;font-style:normal;font-weight:700;font-size:clamp(42px,14.4vw,69px);
+  letter-spacing:4px;text-transform:uppercase;color:var(--blood);
+  text-shadow:0 0 26px rgba(155,31,21,.6),0 3px 0 #000}
+.go{font-family:var(--hud);font-weight:600;font-size:18px;letter-spacing:4px;text-transform:uppercase;
+  padding:14px 0;width:100%;max-width:280px;cursor:pointer;background:transparent;color:var(--amber);
+  border:2px solid var(--amber);min-height:52px;transition:background .15s,color .15s}
+.go:hover{background:var(--amber);color:#090706}
+.go:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+.go.alt{background:transparent;color:var(--faint);border-color:rgba(240,232,217,.2)}
+.go.alt:hover{background:rgba(240,232,217,.1);color:var(--ink)}
+.sens{display:flex;align-items:center;gap:14px;width:100%;max-width:280px;
+  font-family:var(--hud);font-size:10px;font-weight:500;letter-spacing:2px;
+  text-transform:uppercase;color:var(--faint);white-space:nowrap}
+.sens input{flex:1;min-width:0;height:44px;accent-color:var(--amber);
+  touch-action:none;cursor:pointer;background:none}
+.sens output{min-width:36px;text-align:right;color:var(--amber);
+  font-variant-numeric:tabular-nums;letter-spacing:1px}
+.stat{display:flex;gap:40px;font-size:11px;letter-spacing:3px;color:var(--faint);text-transform:uppercase}
+.stat b{display:block;margin-top:4px;font-size:30px;font-weight:600;letter-spacing:0;
+  color:var(--amber);font-variant-numeric:tabular-nums}
+.bar{width:180px;height:2px;background:rgba(240,232,217,.12)}
+.bar i{display:block;height:100%;width:0;background:var(--blood);transition:width .25s}
+#hint{font-size:10px;letter-spacing:2.5px;line-height:1.9;opacity:.75}
+/* leaderboard */
+.lbform{display:flex;gap:10px;align-items:stretch;width:100%;max-width:280px}
+.lbform[hidden]{display:none}
+.lbform input{flex:1;min-width:0;font-family:var(--hud);font-size:16px;font-weight:400;
+  letter-spacing:3px;text-transform:uppercase;background:rgba(240,232,217,.05);
+  border:1px solid rgba(240,232,217,.22);color:var(--ink);padding:0 12px;min-height:50px;
+  text-align:center}
+.lbform input::placeholder{color:var(--faint);opacity:.7;letter-spacing:2px}
+.lbform input:focus{outline:none;border-color:var(--amber);background:rgba(233,194,113,.06)}
+.lbform .go{width:auto;max-width:none;flex:0 0 auto;padding:0 20px;font-size:15px;letter-spacing:2px;
+  min-height:50px;border-width:1px}
+.lbnote{font-size:10px;letter-spacing:2.5px;color:var(--amber);min-height:12px;text-transform:uppercase}
+.lb{border-collapse:collapse;font-size:13px;letter-spacing:.5px;width:100%;max-width:300px}
+.lb td{padding:6px 4px;border-bottom:1px solid rgba(240,232,217,.07);color:var(--ink)}
+.lb td:first-child{color:var(--faint);width:26px;text-align:left;font-size:11px}
+.lb td:nth-child(2){text-align:left}
+.lb td:nth-child(3),.lb td:nth-child(4){text-align:right;color:var(--faint);
+  font-variant-numeric:tabular-nums;font-size:12px}
+.lb tr.you td{color:var(--amber)}
+/* The USE button pulses when there is something to use. On a phone the on-screen
+   prompt is small and off to the side; the thing your thumb is looking for is
+   the button, so that is what has to light up. */
+@keyframes usePulse{
+  0%,100%{ box-shadow:0 0 0 0 rgba(233,194,113,.55), 0 0 16px 2px rgba(233,194,113,.35);
+           border-color:var(--amber); transform:scale(1) }
+  50%    { box-shadow:0 0 0 12px rgba(233,194,113,0), 0 0 26px 6px rgba(233,194,113,.5);
+           border-color:#FFE6B0; transform:scale(1.07) }
+}
+.touch-button.live{ animation:usePulse 1.1s ease-in-out infinite;
+  background:#2a200fcc; color:#FFE6B0 }
+.touch-button.live span{ color:#FFE6B0 }
+/* Can't afford it: present but not shouting. */
+.touch-button.live.broke{ animation-duration:2.2s; color:#c9b68f;
+  box-shadow:0 0 12px 1px rgba(233,194,113,.18); border-color:rgba(233,194,113,.45) }
+/* And the prompt itself pulls a little harder. */
+@keyframes buyPulse{ 0%,100%{opacity:.88} 50%{opacity:1} }
+.buy.on{ animation:buyPulse 1.1s ease-in-out infinite }
+/* Faraday's settings panel arrives with three paragraphs of instructions in the
+   system font. On a phone that is the whole screen below the Start button.
+   Keep the two controls that matter and dress them like everything else. */
+#menu .menu-content{font-family:var(--hud);gap:14px;margin-top:6px}
+#menu .menu-content p{display:none}
+.touch-settings{font-family:var(--hud);font-size:11px;letter-spacing:2.5px;
+  text-transform:uppercase;color:var(--faint);width:min(300px,86vw)}
+.touch-settings label{gap:10px;justify-content:center}
+.touch-settings input[type=range]{accent-color:var(--amber);max-width:140px}
+.touch-settings output{color:var(--amber);letter-spacing:0;font-size:12px}
+.touch-settings button{font-family:var(--hud);font-size:11px;letter-spacing:2.5px;
+  text-transform:uppercase;background:transparent;color:var(--faint);
+  border:1px solid rgba(240,232,217,.18);padding:10px 18px;min-height:44px;border-radius:0}
+.touch-settings button:hover{color:var(--ink);border-color:rgba(240,232,217,.35)}
+.touch-settings select{font-family:var(--hud);border-radius:0}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<div id="app">
+  <div class="hud" id="hudwrap" hidden>
+    <div class="round">Round<b id="h-round">1</b></div>
+    <div class="pts"><b id="h-pts">500</b><span>Points</span></div>
+    <div class="gun"><b id="h-ammo">8</b><i id="h-mag">/ 56</i><span id="h-gun">M1911</span></div>
+    <div class="xh"></div><div class="buy" id="h-buy"></div><div class="toast" id="h-toast"></div>
+  </div>
+  <div class="hurt" id="hurt"></div>
+
+  <div class="screen" id="s-start">
+    <div class="in">
+      <div class="wm"><b>Browser</b><i>Zombies</i></div>
+      <p>Board up the windows. Shoot for points. They come faster every round.</p>
+      <div class="bar"><i id="loadbar"></i></div>
+      <button class="go" id="btn-start" type="button" disabled>Loading</button>
+      <div class="sub" id="hint"></div>
+      <!-- The touch settings panel (look sensitivity, full screen) mounts into
+           '#menu .menu-content'. That is where it lives in Kino der Toten, so
+           the host element is provided here rather than patching their code. -->
+      <section id="menu"><div class="menu-content"></div></section>
+    </div>
+  </div>
+  <div class="screen" id="s-pause" hidden>
+    <div class="in">
+      <div class="sub">Browser Zombies</div><h1>Paused</h1>
+      <div class="sub" id="p-stat">Round 1</div>
+      <button class="go" id="btn-resume" type="button">Resume</button>
+      <button class="go alt" id="btn-restart" type="button">Restart</button>
+      <label class="sens" for="p-sens">Look
+        <input id="p-sens" type="range" min="0.4" max="2" step="0.1" value="1">
+        <output id="p-sens-val" for="p-sens">1.0×</output></label>
+      <div class="sub" id="p-hint">Esc to resume</div>
+    </div>
+  </div>
+  <div class="screen" id="s-dead" hidden>
+    <div class="in">
+      <div class="sub">You were overrun on</div><h1 id="d-round">Round 1</h1>
+      <div class="stat"><div>Kills<b id="d-kills">0</b></div><div>Points<b id="d-pts">0</b></div></div>
+      <form class="lbform" id="lb-form">
+        <input id="lb-name" maxlength="16" placeholder="YOUR NAME" autocomplete="off"
+               spellcheck="false" aria-label="Name for the leaderboard">
+        <button class="go" id="btn-submit" type="submit">Submit</button>
+      </form>
+      <div class="lbnote" id="lb-note"></div>
+      <table class="lb" id="lb-table" hidden><tbody id="lb-rows"></tbody></table>
+      <button class="go" id="btn-again" type="button">Again</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/*
+ * Touch controls below are from Kino der Toten by Luckey Faraday (@luckeyfaraday)
+ * https://github.com/luckeyfaraday/kino-der-toten  --  MIT License.
+ *
+ * MIT License. Copyright (c) 2026 Luckey Faraday.
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ *
+ * Only original MIT-licensed code is used here. No game assets from that
+ * project are included; see its ASSET_NOTICE.md.
+ */
+const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+
+// Pointer ownership is independent of DOM hit testing. A finger keeps its job
+// until released, even when it crosses another control or leaves the screen.
+class TouchInput {
+  constructor({ onLook = () => {}, onAction = () => {} } = {}) {
+    this.onLook = onLook;
+    this.onAction = onAction;
+    this.pointers = new Map();
+    this.reset();
+  }
+
+  reset() {
+    this.pointers.clear();
+    this.forward = this.strafe = this.stickX = this.stickY = 0;
+    this.sprint = this.aim = this.crouch = this.fire = false;
+    this.jumpQueued = this.fireQueued = false;
+  }
+
+  begin(id, kind, x, y, radius = 50) {
+    if (this.pointers.has(id) || [...this.pointers.values()].some(p => p.kind === kind)) return false;
+    this.pointers.set(id, { kind, x, y, originX: x, originY: y, radius });
+    if (kind === 'fire') this.fire = this.fireQueued = true;
+    if (kind === 'jump') this.jumpQueued = true;
+    if (kind === 'aim') this.aim = !this.aim;
+    if (kind === 'crouch') this.crouch = !this.crouch;
+    if (!['move', 'look', 'fire', 'jump', 'aim', 'crouch'].includes(kind)) this.onAction(kind);
+    return true;
+  }
+
+  move(id, x, y) {
+    const p = this.pointers.get(id);
+    if (!p) return;
+    if (p.kind === 'move') {
+      const dx = (x - p.originX) / p.radius;
+      const dy = (y - p.originY) / p.radius;
+      const length = Math.hypot(dx, dy);
+      const magnitude = clamp((length - 0.12) / 0.88, 0, 1);
+      this.strafe = length ? dx / length * magnitude : 0;
+      this.forward = length ? -dy / length * magnitude : 0;
+      this.stickX = dx / Math.max(1, length) * p.radius;
+      this.stickY = dy / Math.max(1, length) * p.radius;
+      // Hysteresis prevents sprint chatter around the outer ring. Sideways
+      // and backwards movement remain a walk; aiming/firing override sprint.
+      this.sprint = this.forward > (this.sprint ? 0.72 : 0.92);
+    } else if (p.kind === 'look' || p.kind === 'fire') {
+      // With two aiming fingers down, fire owns the camera to avoid doubling
+      // the turn. Track both positions so releasing fire cannot cause a jump.
+      if (p.kind === 'fire' || !this.fire) this.onLook(x - p.x, y - p.y);
+    }
+    p.x = x;
+    p.y = y;
+  }
+
+  end(id, cancelled = false) {
+    const p = this.pointers.get(id);
+    if (!p) return;
+    this.pointers.delete(id);
+    if (p.kind === 'move') {
+      this.forward = this.strafe = this.stickX = this.stickY = 0;
+      this.sprint = false;
+    }
+    if (p.kind === 'fire') {
+      this.fire = false;
+      if (cancelled) this.fireQueued = false;
+    }
+    if (cancelled && p.kind === 'jump') this.jumpQueued = false;
+  }
+
+  read() {
+    const fire = this.fire || this.fireQueued;
+    const input = {
+      forward: this.forward, strafe: this.strafe,
+      sprint: this.sprint && !this.aim && !fire && !this.crouch,
+      crouch: this.crouch, aim: this.aim, fire, firePressed: this.fireQueued, jump: this.jumpQueued,
+      use: this.held('use'), hack: this.held('hack'),
+    };
+    this.fireQueued = this.jumpQueued = false;
+    return input;
+  }
+
+  held(kind) {
+    return [...this.pointers.values()].some(p => p.kind === kind);
+  }
+
+  getState() {
+    return {
+      pointers: this.pointers.size, forward: this.forward, strafe: this.strafe,
+      sprint: this.sprint && !this.aim && !this.fire && !this.crouch,
+      aim: this.aim, crouch: this.crouch, fire: this.fire, use: this.held('use'), hack: this.held('hack'),
+    };
+  }
+}
+
+class TouchControls {
+  constructor({ root, onLook, onAction, onModeChange = () => {}, onReset = () => {} }) {
+    this.root = root;
+    this.onReset = onReset;
+    this.enabled = false;
+    this.visible = false;
+    this.mode = matchMedia('(pointer: coarse)').matches;
+    this.sensitivity = 1;
+    try {
+      const saved = Number(localStorage.getItem('zombies.touchSensitivity'));
+      if (saved > 0) this.sensitivity = clamp(saved, 0.4, 2);
+    } catch { /* Storage is optional in private browsing and embedded games. */ }
+    this.input = new TouchInput({
+      onLook: (x, y) => onLook(x, y, this.sensitivity), onAction,
+    });
+    this.stick = root.querySelector('.touch-stick');
+    this.knob = root.querySelector('.touch-knob');
+    this.moveZone = root.querySelector('[data-touch="move"]');
+    this.captures = new Map();
+    const activate = (event) => {
+      if (event.pointerType !== 'touch' || this.mode) return;
+      this.mode = true;
+      document.body.classList.add('touch-mode');
+      onModeChange();
+    };
+    document.body.classList.toggle('touch-mode', this.mode);
+    document.addEventListener('pointerdown', activate, { capture: true, passive: true });
+    root.addEventListener('pointerdown', (event) => {
+      const target = event.target.closest('[data-touch]');
+      if (!this.enabled || event.pointerType !== 'touch' || !target) return;
+      event.preventDefault();
+      const kind = target.dataset.touch;
+      const radius = this.stick.offsetWidth * 0.36;
+      if (!this.input.begin(event.pointerId, kind, event.clientX, event.clientY, radius)) return;
+      target.setPointerCapture(event.pointerId);
+      this.captures.set(event.pointerId, target);
+      if (kind === 'move') {
+        const bounds = this.moveZone.getBoundingClientRect();
+        this.stick.style.left = `${event.clientX - bounds.left}px`;
+        this.stick.style.top = `${event.clientY - bounds.top}px`;
+        this.stick.style.bottom = 'auto';
+      }
+      this.render();
+    });
+    root.addEventListener('pointermove', (event) => {
+      if (!this.input.pointers.has(event.pointerId)) return;
+      event.preventDefault();
+      this.input.move(event.pointerId, event.clientX, event.clientY);
+      this.render();
+    });
+    for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+      root.addEventListener(type, (event) => {
+        if(type !== 'pointerup' && this.input.pointers.has(event.pointerId)) this.onReset();
+        this.input.end(event.pointerId, type !== 'pointerup');
+        this.captures.delete(event.pointerId);
+        this.render();
+      });
+    }
+    root.addEventListener('contextmenu', event => event.preventDefault());
+    // Rotation/browser chrome changes invalidate the stick origin and pointer
+    // coordinates. Never carry movement or a held trigger into a new layout.
+    addEventListener('resize', () => this.reset());
+    globalThis.visualViewport?.addEventListener('resize', () => this.reset());
+  }
+
+  setSensitivity(value) {
+    if (!Number.isFinite(Number(value))) return;
+    this.sensitivity = clamp(Number(value), 0.4, 2);
+    try { localStorage.setItem('zombies.touchSensitivity', String(this.sensitivity)); } catch {}
+  }
+
+  setEnabled(enabled, visible = enabled) {
+    enabled = Boolean(enabled && this.mode);
+    visible = Boolean(visible && this.mode);
+    if (this.enabled && !enabled) this.reset();
+    this.enabled = enabled;
+    if (this.visible !== visible) {
+      this.visible = visible;
+      this.root.hidden = !visible;
+    }
+    this.root.classList.toggle('touch-disabled', !enabled);
+  }
+
+  reset() {
+    this.input.reset();
+    this.onReset();
+    for (const [id, target] of this.captures) {
+      if (target.hasPointerCapture(id)) target.releasePointerCapture(id);
+    }
+    this.captures.clear();
+    this.render();
+  }
+
+  render() {
+    const state = this.input.getState();
+    this.knob.style.transform = `translate(${this.input.stickX}px, ${this.input.stickY}px)`;
+    const moving = [...this.input.pointers.values()].some(p => p.kind === 'move');
+    if (!moving) {
+      this.stick.style.left = this.stick.style.top = this.stick.style.bottom = '';
+    }
+    this.stick.classList.toggle('engaged', moving);
+    this.stick.classList.toggle('sprinting', state.sprint);
+    this.stick.querySelector('span').textContent = state.sprint ? 'SPRINT' : 'MOVE';
+    for (const button of this.root.querySelectorAll('button[data-touch]')) {
+      const kind = button.dataset.touch;
+      const pressed = kind === 'aim' || kind === 'crouch' ? state[kind]
+        : [...this.input.pointers.values()].some(p => p.kind === kind);
+      button.classList.toggle('pressed', pressed);
+      if (kind === 'aim' || kind === 'crouch') button.setAttribute('aria-pressed', String(pressed));
+    }
+  }
+
+  getState() {
+    return { mode: this.mode, enabled: this.enabled, visible: this.visible,
+      sensitivity: this.sensitivity, ...this.input.getState() };
+  }
+}
+
+
+// Shared BO2 pointer controls, with the actions needed by both Zombies maps.
+function createZombieTouch({ moon = false, onLook, onAction, onPause, onReset }) {
+  const button = (kind, label, icon = '') => `<button type="button" class="touch-button touch-${kind}" data-touch="${kind}" aria-label="${label}">${icon}<span>${label}</span></button>`;
+  const svg = content => `<svg viewBox="0 0 24 24" aria-hidden="true">${content}</svg>`;
+  const root = document.createElement('div');
+  root.id = 'touch-controls';
+  root.hidden = true;
+  root.setAttribute('aria-label', 'Touch game controls');
+  root.innerHTML = `<div class="touch-look" data-touch="look"></div>
+    <div class="touch-move" data-touch="move"><div class="touch-stick"><div class="touch-knob"></div><span>MOVE</span></div></div>
+    ${button('fire', 'FIRE', svg('<circle cx="12" cy="12" r="7"/><path d="M12 1v6m0 10v6M1 12h6m10 0h6"/>'))}
+    ${button('aim', 'AIM', svg('<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2"/>'))}
+    ${button('jump', 'JUMP', svg('<path d="m5 12 7-7 7 7M12 5v15"/>'))}
+    ${button('crouch', 'CROUCH', svg('<path d="m5 12 7 7 7-7M12 19V4"/>'))}
+    ${button('reload', 'RELOAD', svg('<path d="M19 8a8 8 0 1 0 0 9M19 3v6h-6"/>'))}
+    ${button('use', 'USE', svg('<path d="M8 12V5a2 2 0 0 1 4 0v6l6 1v5l-4 4H9l-5-7 2-2 3 3"/>'))}
+    ${button('melee', 'KNIFE', svg('<path d="m4 21 6-6m-3-3 6 6M9 14 20 3l-2 9-6 5"/>'))}
+    <div class="touch-toolbar">
+      ${button('weapon', 'WEAPON')}${button('grenade', 'GRENADE')}
+      ${moon ? button('equipment', 'GERSH/QED') + button('suit', 'P.E.S.') + button('hack', 'HACK') + button('attachment', 'WAVE') + button('journal', 'OBJECTIVE') : button('claymore', 'CLAYMORE') + button('equipment', 'MONKEY') + button('attachment', 'ALT FIRE')}
+    </div>
+    <button type="button" class="touch-button touch-pause" id="touch-pause" aria-label="Pause">Ⅱ</button>`;
+  document.body.append(root);
+  const updateHints = () => {
+    if (!moon) return;
+    for (const selector of ['#menu .preview', '#journal p:last-child']) {
+      const element = document.querySelector(selector);
+      element.textContent = element.textContent.replace('Tab shows', 'OBJECTIVE shows').replace('Tab closes this panel.', 'Tap OBJECTIVE to close.');
+    }
+  };
+  const controls = new TouchControls({ root, onLook, onAction, onReset, onModeChange: updateHints });
+  if (controls.mode) updateHints();
+  const settings = document.createElement('div');
+  settings.className = 'touch-only touch-settings';
+  settings.innerHTML = `<p>Left stick: move; push forward to sprint. Swipe right to look, or drag FIRE to aim while shooting. Tap AIM / CROUCH to toggle. Hold USE to repair${moon ? ', or HACK to hack' : ''}.</p>
+    <label for="touch-sensitivity">Look sensitivity <input id="touch-sensitivity" type="range" min="0.4" max="2" step="0.1"><output id="touch-sensitivity-value" for="touch-sensitivity"></output></label>
+    <p>Landscape gives you more room to aim.</p>
+    <button type="button" id="touch-fullscreen" hidden>Full screen</button>`;
+  document.querySelector(moon ? '#menu .panel' : '#menu .menu-content').append(settings);
+  const slider = settings.querySelector('input');
+  const value = settings.querySelector('output');
+  slider.value = controls.sensitivity;
+  value.textContent = `${controls.sensitivity.toFixed(1)}×`;
+  slider.addEventListener('input', () => {
+    controls.setSensitivity(slider.value);
+    value.textContent = `${controls.sensitivity.toFixed(1)}×`;
+  });
+  const fullscreen = settings.querySelector('#touch-fullscreen');
+  fullscreen.hidden = !document.fullscreenEnabled;
+  fullscreen.addEventListener('click', async () => {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await document.documentElement.requestFullscreen();
+    } catch { /* Full screen is optional. */ }
+  });
+  // A third finger must be able to pause while move and fire are held.
+  const pause = root.querySelector('#touch-pause');
+  pause.addEventListener('pointerdown', event => {
+    if (event.pointerType !== 'touch') return;
+    event.preventDefault();
+    event.stopPropagation();
+    onPause();
+  });
+  pause.addEventListener('click', event => {
+    if (event.pointerType === 'touch' || event.sourceCapabilities?.firesTouchEvents) return;
+    onPause();
+  });
+  return controls;
+}
+
+</script>
+<script>
+// Crash reporting. There was none, so a phone dying was indistinguishable from
+// a phone being slow -- the server log showed every asset delivered with a 200
+// and then nothing. These beacons land in the Caddy access log as 404s, which
+// is enough to see what the device actually said.
+(function(){
+  function beacon(kind, msg){
+    try{
+      var u='/zerr?k='+encodeURIComponent(kind)+'&m='+encodeURIComponent(String(msg).slice(0,180))
+           +'&w='+innerWidth+'&h='+innerHeight+'&dpr='+(devicePixelRatio||1);
+      if(navigator.sendBeacon) navigator.sendBeacon(u); else new Image().src=u;
+    }catch(e){}
+  }
+  window.addEventListener('error',function(e){
+    // Line number included: "cannot set className of null" says nothing about
+    // WHERE, and hunting it by eye across 1800 lines is how evenings vanish.
+    beacon('err', (e.message||e.error)+' @'+(e.lineno||'?')+':'+(e.colno||'?'));
+  });
+  window.addEventListener('unhandledrejection',function(e){ beacon('rej', e.reason); });
+  // Memory pressure is the thing that actually kills mobile here.
+  if(performance&&performance.memory){
+    setInterval(function(){
+      var m=performance.memory;
+      if(m.usedJSHeapSize > m.jsHeapSizeLimit*0.88) beacon('mem', Math.round(m.usedJSHeapSize/1048576)+'MB');
+    }, 5000);
+  }
+  window.__beacon=beacon;
+  beacon('load', (location.search||'-'));
+})();
+// A game that fails silently just says "Loading" forever, which is
+// indistinguishable from a slow connection. Anything thrown here is put on the
+// screen instead.
+window.addEventListener('error', function(e){
+  var b = document.getElementById('btn-start');
+  if (b && b.disabled){
+    b.textContent = 'Error';
+    var h = document.getElementById('hint');
+    if (h) h.textContent = String(e.message || e.error || 'unknown').slice(0, 140);
+  }
+});
+(function(){
+'use strict';
+var el=function(i){return document.getElementById(i);}, app=el('app');
+var TOUCH=window.matchMedia('(pointer:coarse)').matches||'ontouchstart' in window;
+// iOS ignores maximum-scale and user-scalable for accessibility, so a double tap
+// still zooms the page and leaves you fighting the browser mid-round. Swallow
+// the second tap of a pair, and the pinch gestures with it -- but never over the
+// touch controls, whose own handlers need those events.
+if(TOUCH){
+  var _lastTap=0;
+  document.addEventListener('touchend', function(e){
+    if(e.target.closest && e.target.closest('#touch-controls,#menu,.screen')) return;
+    var now=Date.now();
+    if(now-_lastTap<=350) e.preventDefault();
+    _lastTap=now;
+  }, {passive:false});
+  ['gesturestart','gesturechange','gestureend'].forEach(function(g){
+    document.addEventListener(g, function(e){ e.preventDefault(); }, {passive:false});
+  });
+  document.addEventListener('dblclick', function(e){ e.preventDefault(); }, {passive:false});
+}
+
+/* ---------- renderer ---------- */
+var scene=new THREE.Scene();
+scene.background=new THREE.Color(0x060505);
+scene.fog=new THREE.FogExp2(0x070604,0.030);
+var camera=new THREE.PerspectiveCamera(74,1,0.25,420);
+// logarithmicDepthBuffer was on to stop coplanar SketchUp faces z-fighting. It
+// writes depth from the fragment shader, which breaks how MSAA resolves shared
+// triangle edges and leaves a bright one-pixel crack along EVERY edge in the
+// scene -- the white lines around everything. The z-fighting it was hiding had
+// a different cause anyway (every material was DoubleSide), fixed separately,
+// so a plain depth buffer with a tighter far plane does the job.
+// ?logdepth=1 puts it back for comparison.
+var LOGDEPTH=/[?&]logdepth=1/.test(location.search);
+var renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance',
+  logarithmicDepthBuffer:LOGDEPTH});
+// A phone at devicePixelRatio 3 would render nine times the fragments of a
+// 1x screen for no visible gain on a 6-inch display.
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, TOUCH?1.5:2));
+renderer.outputEncoding=THREE.sRGBEncoding;
+app.appendChild(renderer.domElement);
+function resize(){var w=app.clientWidth,h=app.clientHeight;
+  camera.aspect=w/h;camera.updateProjectionMatrix();
+  renderer.setSize(w,h,false);}
+window.addEventListener('resize',resize);
+
+/* ---------- textures (CC0, ambientCG) ---------- */
+var loader=new THREE.TextureLoader(), pending=15, ready=false;
+function tex(file,rx,ry){
+  var t=loader.load('tex/'+file,done,undefined,done);
+  t.wrapS=t.wrapT=THREE.RepeatWrapping;t.repeat.set(rx,ry);t.encoding=THREE.sRGBEncoding;
+  return t;
+}
+function allowStart(){
+  if(ready)return; ready=true;
+  el('loadbar').style.width='100%';
+  var b=el('btn-start'); b.disabled=false; b.textContent='Start';
+}
+function done(){
+  pending--;
+  el('loadbar').style.width=((15-Math.max(pending,0))/15*100)+'%';
+  if(pending<=0)allowStart();
+}
+// Hard ceiling: play after 5s whatever the network did.
+setTimeout(allowStart,5000);
+// A full material, not just its colour. The normal map is what stops a wall
+// looking like painted cardboard: it tells the renderer the surface angle
+// varies, so light catches every crack instead of washing flat across it.
+// These shipped in the same downloads as the colour maps and were unused.
+function mat3(base,rx,ry){
+  return {
+    map:   tex(base+'.jpg',rx,ry),
+    normal:tex(base+'_NormalGL.jpg',rx,ry),
+    rough: tex(base+'_Roughness.jpg',rx,ry)
+  };
+}
+var T={
+  carpet:mat3('Carpet016',6,6),  marble:mat3('Marble012',3,3),
+  plaster:mat3('PaintedPlaster017',3,2), concrete:mat3('Concrete034',3,2),
+  velvet:mat3('Fabric081C',2,3)
+};
+// MeshStandardMaterial rather than Lambert: Lambert ignores normal maps
+// entirely, so none of the above would have made any difference under it.
+function surf(t,colour,rough,normalScale){
+  return new THREE.MeshStandardMaterial({
+    map:t.map, normalMap:t.normal, roughnessMap:t.rough,
+    color:colour, roughness:rough===undefined?1:rough, metalness:0,
+    normalScale:new THREE.Vector2(normalScale||1,normalScale||1)
+  });
+}
+
+/* ---------- models ---------- */
+// One zombie prototype is loaded and cloned per spawn. SkeletonUtils.clone is
+// required rather than .clone(): a plain clone shares the skeleton, so every
+// zombie would animate in lockstep off the first one's bones.
+var ZPROTO=null, GUNPROTO=null, GUNPROTOS={}, GUNPENDING=0, CLIPS={}, modelsPending=6;
+var PROPS={}, PROPSPENDING=0;
+function propDone(){ PROPSPENDING--; if(PROPSPENDING<=0) dressTheatre(); }
+function modelDone(){ modelsPending--; if(modelsPending<=0&&pending<=0) allowStart(); }
+(function(){
+  // Mixamo FBX rather than the ripped GLB. The CoD file loaded, positioned and
+  // scaled correctly and still drew nothing -- it was exported for a game
+  // engine, not a web renderer. Mixamo exports are built for this path and
+  // carry their own animation clips, which is the part that actually sells it.
+  var fl=new THREE.FBXLoader();
+  fl.load('fbx/zombie.fbx', function(o){
+    o.traverse(function(c){
+      if(c.isMesh||c.isSkinnedMesh){ c.frustumCulled=false; c.castShadow=false;
+        if(c.material){ var m=[].concat(c.material);
+          m.forEach(function(mm){ if(mm){ mm.metalness=0; mm.roughness=1; mm.side=THREE.DoubleSide; } }); } }
+    });
+    // Mixamo ships in centimetres, so the rig is ~180 units tall.
+    o.updateMatrixWorld(true);
+    var bb=new THREE.Box3(), v=new THREE.Vector3(), nb=0;
+    o.traverse(function(c){ if(c.isBone){ c.getWorldPosition(v); bb.expandByPoint(v); nb++; } });
+    var sz=new THREE.Vector3(); bb.getSize(sz);
+    var k=(nb>4&&sz.y>0.001) ? 1.72/sz.y : 0.01;
+    o.scale.setScalar(k);
+    // FBXLoader can leave Mixamo's Z-up conversion on the root, which lays the
+    // character on its back. Stand it up from the measured bone box: if it is
+    // deeper than it is tall, it is lying down.
+    bb.getSize(sz);
+    if(sz.z>sz.y*1.4) o.rotation.x=-Math.PI/2;
+    o.position.y=0;
+    var wrap=new THREE.Group(); wrap.add(o);
+    wrap.userData.calib={bones:nb,rawH:+sz.y.toFixed(1),k:+k.toFixed(5)};
+    ZPROTO=wrap; modelDone();
+  }, undefined, function(){ modelDone(); });
+
+  function clip(name,file){
+    fl.load('fbx/'+file, function(o){
+      if(o.animations&&o.animations.length) CLIPS[name]=o.animations[0];
+      modelDone();
+    }, undefined, function(){ modelDone(); });
+  }
+  clip('walk','anim_walk.fbx');
+  clip('attack','anim_attack.fbx');
+  clip('die','anim_die.fbx');
+
+  // Set dressing. Each is optional: a prop that fails to load must never stop
+  // the game starting, so every one resolves its slot either way.
+  function prop(name,file,done){
+    new THREE.GLTFLoader().load('models/'+file,function(g){
+      g.scene.traverse(function(o){ if(o.isMesh){ o.frustumCulled=false;
+        if(o.material){ o.material.metalness=0; o.material.roughness=1; } } });
+      PROPS[name]=g.scene; propDone();
+    },undefined,propDone);
+  }
+  var PROPFILES={
+    stage:'stage.glb', seat:'seat.glb', projector:'projector.glb',
+    rubble:'rubble.glb', bricks:'bricks.glb', debrisWood:'debris_wood.glb',
+    pillar:'broken_pillar.glb', block:'cinderblock.glb', cobweb:'cobweb.glb',
+    table:'table.glb', plank:'plank.glb', window:'window.glb',
+    mysterybox:'mysterybox.glb', powerswitch:'powerswitch.glb',
+    teleporter:'teleporter.glb', perks:'perks.glb',
+    stairsModel:'stairs.glb', railing:'railing.glb'
+  };
+  PROPSPENDING=0;
+  for(var pn in PROPFILES) PROPSPENDING++;
+  for(var pn2 in PROPFILES) prop(pn2,PROPFILES[pn2]);
+
+  // One prototype per weapon you can hold. setViewModel() used to only move the
+  // muzzle flash, so buying a different gun left an M1911 in your hands.
+  GUNPENDING=2;
+  function gunProto(file, key, barrelAxis, vmScale){
+    new THREE.GLTFLoader().load('models/'+file, function(g){
+      var root=g.scene;
+      var bb=new THREE.Box3().setFromObject(root), sz=new THREE.Vector3();
+      bb.getSize(sz);
+      var longest=Math.max(sz.x,sz.y,sz.z);
+      root.scale.setScalar(longest>0.001 ? 0.26/longest : 1);
+      GUNPROTOS[key]={root:root, axis:barrelAxis, vmScale:vmScale||0.24};
+      if(key==='pistol') GUNPROTO=root;
+      if(typeof mountWallGuns==='function') mountWallGuns();
+      modelDone();
+    }, undefined, function(){ modelDone(); });
+  }
+  // Length in the hand, not a shared number. 0.24 suits a 1911; an MP40 is
+  // three times the gun and scaled to the same 0.24 it looked like a toy.
+  gunProto('pistol2.glb','pistol','x',0.24);
+  gunProto('mp40.glb','mp40','z',0.50);
+})();
+
+var M={
+  lobbyFloor:surf(T.marble,0x6E685E,0.85,0.7),
+  hallFloor :surf(T.carpet,0x4E1A16,1.0,1.5),
+  corrFloor :surf(T.concrete,0x6A645C,0.95,1.2),
+  wall      :surf(T.plaster,0x5E564A,1.0,1.3),
+  wallRed   :surf(T.plaster,0x4A2822,1.0,1.3),
+  conc      :surf(T.concrete,0x5E584F,0.95,1.2),
+  curtain   :surf(T.velvet,0x5E1210,0.9,1.0),
+  gilt      :new THREE.MeshStandardMaterial({color:0x8A6B2E,roughness:.35,metalness:.65}),
+  wood      :new THREE.MeshStandardMaterial({color:0x4A3524,roughness:.85,metalness:0}),
+  seat      :surf(T.velvet,0x4A1E1A,0.95,1.0),
+  ceiling   :surf(T.plaster,0x2E2A24,1.0,1.0),
+  flesh     :new THREE.MeshStandardMaterial({color:0x8E9970,roughness:1,metalness:0}),
+  rags      :new THREE.MeshStandardMaterial({color:0x33382B,roughness:1,metalness:0}),
+  steel     :new THREE.MeshStandardMaterial({color:0x4A4A50,roughness:.4,metalness:.7})
+};
+
+/* ---------- lighting ---------- */
+scene.add(new THREE.AmbientLight(0x1C1812,0.34));
+var fill=new THREE.HemisphereLight(0x3A4258,0x120E08,0.22);scene.add(fill);
+
+/* ---------- geometry helpers ---------- */
+var walls=[], BOX=new THREE.BoxGeometry(1,1,1);
+// Declared here, not in the player section: buildMap runs before that block is
+// reached, so `var` hoisting left these undefined and every push threw.
+var PLATFORMS=[], RAMPS=[], WINDOWS=[];
+// Collision against an imported map is raycast, not rectangles: there is no
+// list of walls to test, only triangles.
+var MAPMESHES=[];
+// Collision is a GRID, not raycasts. The Kino model is 206,000 triangles inside
+// a thirty-metre building, and Raycaster rejects a mesh by its bounding SPHERE,
+// so no amount of spatial chunking helps -- the three-by-three cells around the
+// lobby still held 151,000 of them. One cast measured 5-7ms and the player alone
+// fires nine a frame, which is the lag.
+//
+// So rasterise the triangles once at load instead. Each cell remembers the floor
+// heights under it and the vertical spans of anything wall-like, and every query
+// afterwards is an array read.
+var CG=null, CGCELL=0.4;
+function buildColliders(root){
+  root.updateMatrixWorld(true);
+  var bb=new THREE.Box3();
+  root.traverse(function(o){ if(!o.isMesh||!o.geometry) return;
+    o.geometry.computeBoundingBox(); if(!o.geometry.boundingBox) return;
+    var bx=o.geometry.boundingBox.clone(); bx.applyMatrix4(o.matrixWorld); bb.union(bx); });
+  var CELL=CGCELL, X0=bb.min.x-2, Z0=bb.min.z-2;
+  var NX=Math.ceil((bb.max.x-bb.min.x+4)/CELL), NZ=Math.ceil((bb.max.z-bb.min.z+4)/CELL);
+  var floors=new Array(NX*NZ), walls=new Array(NX*NZ), tri=0;
+  var va=new THREE.Vector3(), vb=new THREE.Vector3(), vc=new THREE.Vector3(),
+      e1=new THREE.Vector3(), e2=new THREE.Vector3(), nr=new THREE.Vector3();
+  root.traverse(function(o){
+    if(!o.isMesh||!o.geometry||!o.geometry.attributes.position) return;
+    var g=o.geometry, pos=g.attributes.position, idx=g.index,
+        n=idx?idx.count:pos.count, m=o.matrixWorld;
+    for(var t=0;t+2<n;t+=3){
+      var i0=idx?idx.getX(t):t, i1=idx?idx.getX(t+1):t+1, i2=idx?idx.getX(t+2):t+2;
+      va.fromBufferAttribute(pos,i0).applyMatrix4(m);
+      vb.fromBufferAttribute(pos,i1).applyMatrix4(m);
+      vc.fromBufferAttribute(pos,i2).applyMatrix4(m);
+      e1.subVectors(vb,va); e2.subVectors(vc,va); nr.crossVectors(e1,e2);
+      if(nr.lengthSq()<1e-12) continue;
+      nr.normalize();
+      // Floors and ceilings hold you up; everything else stops you.
+      var flat=Math.abs(nr.y)>0.55;
+      var mnx=Math.min(va.x,vb.x,vc.x), mxx=Math.max(va.x,vb.x,vc.x);
+      var mnz=Math.min(va.z,vb.z,vc.z), mxz=Math.max(va.z,vb.z,vc.z);
+      var mny=Math.min(va.y,vb.y,vc.y), mxy=Math.max(va.y,vb.y,vc.y);
+      var ix0=Math.max(0,Math.floor((mnx-X0)/CELL)), ix1=Math.min(NX-1,Math.floor((mxx-X0)/CELL));
+      var iz0=Math.max(0,Math.floor((mnz-Z0)/CELL)), iz1=Math.min(NZ-1,Math.floor((mxz-Z0)/CELL));
+      if(ix1<ix0||iz1<iz0) continue;
+      if((ix1-ix0+1)*(iz1-iz0+1)>30000) continue;
+      tri++;
+      for(var ix=ix0;ix<=ix1;ix++) for(var iz=iz0;iz<=iz1;iz++){
+        var k=iz*NX+ix;
+        if(flat){ (floors[k]||(floors[k]=[])).push(mxy); }
+        else { var w=walls[k]||(walls[k]=[]); w.push(mny,mxy); }
+      }
+    }
+  });
+  // Compact: floors high to low with near-duplicates dropped, wall spans merged.
+  for(var k1=0;k1<floors.length;k1++){
+    var f=floors[k1]; if(!f) continue;
+    f.sort(function(p1,q1){return q1-p1;});
+    var out=[f[0]];
+    for(var i=1;i<f.length;i++) if(out[out.length-1]-f[i]>0.09) out.push(f[i]);
+    floors[k1]=out;
+  }
+  for(var k2=0;k2<walls.length;k2++){
+    var w2=walls[k2]; if(!w2) continue;
+    var spans=[];
+    for(var i2=0;i2<w2.length;i2+=2) spans.push([w2[i2],w2[i2+1]]);
+    spans.sort(function(p2,q2){return p2[0]-q2[0];});
+    var mg=[spans[0]];
+    for(var i3=1;i3<spans.length;i3++){
+      var last=mg[mg.length-1];
+      if(spans[i3][0]<=last[1]+0.05){ if(spans[i3][1]>last[1]) last[1]=spans[i3][1]; }
+      else mg.push(spans[i3]);
+    }
+    var fl2=[]; for(var i4=0;i4<mg.length;i4++) fl2.push(mg[i4][0],mg[i4][1]);
+    walls[k2]=fl2;
+  }
+  CG={floors:floors, walls:walls, NX:NX, NZ:NZ, X0:X0, Z0:Z0, CELL:CELL};
+  window.__COLLIDERS=NX*NZ;
+  window.__CGTRIS=tri;
+}
+function cgIndex(x,z){
+  if(!CG) return -1;
+  var ix=Math.floor((x-CG.X0)/CG.CELL), iz=Math.floor((z-CG.Z0)/CG.CELL);
+  if(ix<0||iz<0||ix>=CG.NX||iz>=CG.NZ) return -1;
+  return iz*CG.NX+ix;
+}
+// Headroom above a floor: the next surface up, or Infinity if nothing is there.
+// A surface less than MIN_CEIL above the floor is FURNITURE, not a ceiling. That
+// distinction is the whole bug behind "I can't get to the Quick Revive": the
+// machine's own lid sits 0.58 above the floor it stands on, mapCeilAt called it
+// a ceiling, and the collision refused to let the player walk up to anything
+// waist height -- a counter, a table, a perk machine. Those stop you by being
+// walls, which the wall test already handles.
+var MIN_CEIL=1.05;
+function mapCeilAt(x,z,floorY,minRise){
+  var k=cgIndex(x,z); if(k<0) return Infinity;
+  var f=CG.floors[k]; if(!f) return Infinity;
+  var m=(minRise===undefined?MIN_CEIL:minRise);
+  for(var i=f.length-1;i>=0;i--) if(f[i]>floorY+m) return f[i]-floorY;
+  return Infinity;
+}
+// Outdoors is a property of WHERE YOU ARE STANDING, not of the column of space.
+// A precomputed per-cell flag judged each cell by its lowest floor, so a balcony
+// open to the sky counted as indoors because there was a floor above the lobby
+// underneath it -- and the player walked out over the top of the building.
+var OPEN_SKY=14, STEPUP=0.7;
+function cgOutsideAt(x,z,fy){
+  if(!CG) return false;
+  if(mapCeilAt(x,z,fy) < OPEN_SKY) return false;
+  // The ceiling is full of holes, so one probe is not enough: most of the
+  // neighbours have to be open to the sky as well.
+  var n=0, C=CG.CELL*1.5;
+  for(var dz=-1;dz<=1;dz++) for(var dx=-1;dx<=1;dx++){
+    if(!dx&&!dz) continue;
+    if(mapCeilAt(x+dx*C, z+dz*C, fy) >= OPEN_SKY) n++;
+  }
+  return n>=5;
+}
+// Which cells are in play. Deciding indoors/outdoors per step was not enough:
+// where a hole in the ceiling sits right at a doorway, BOTH sides read as open
+// sky, no inside->outside step ever happens, and the player strolls out. So
+// flood fill the building once from the spawn, through cells that have a roof
+// over SOME level, and treat everything the fill did not reach as off the map.
+function buildPlayArea(){
+  if(!CG||!MAPSPAWN) return;
+  var N=CG.NX*CG.NZ, play=new Uint8Array(N);
+  function roofed(k){
+    var f=CG.floors[k]; if(!f||f.length<2) return false;
+    for(var i=1;i<f.length;i++) if(f[i-1]-f[i] < OPEN_SKY) return true;
+    return false;
+  }
+  var k0=cgIndex(MAPSPAWN.x, MAPSPAWN.z);
+  if(k0<0) return;
+  var q=[k0]; play[k0]=1;
+  var nb=[1,-1,CG.NX,-CG.NX];
+  while(q.length){
+    var k=q.pop(), ix=k%CG.NX;
+    for(var i=0;i<4;i++){
+      var kk=k+nb[i];
+      if(kk<0||kk>=N||play[kk]) continue;
+      if(i<2 && Math.abs((kk%CG.NX)-ix)!==1) continue;    // do not wrap the row
+      if(!roofed(kk)) continue;
+      play[kk]=1; q.push(kk);
+    }
+  }
+  CG.play=play;
+  var n=0; for(var j=0;j<N;j++) n+=play[j];
+  window.__PLAYCELLS=n;
+}
+function cgInPlay(x,z){
+  if(!CG||!CG.play) return true;
+  var k=cgIndex(x,z);
+  return k>=0 && !!CG.play[k];
+}
+// A distance field to the player, rebuilt a few times a second. Without it the
+// zombies walk straight at you and jam against the first wall between: a whole
+// round of eight got inside and not one of them ever arrived.
+var NAV=null, navT=0, NAVN=0;
+function buildNav(){
+  if(!CG) return;
+  var N=CG.NX*CG.NZ;
+  if(!NAV||NAV.length!==N) NAV=new Int32Array(N);
+  NAV.fill(-1);
+  var pk=cgIndex(P.pos.x,P.pos.z); if(pk<0) return;
+  var pf=mapGroundAt(P.pos.x,P.pos.z,P.pos.y-P.eye+0.6);
+  if(pf===null) return;
+  // One storey at a time: each cell contributes the floor nearest the player's.
+  function lvl(k){
+    var f=CG.floors[k]; if(!f||!f.length) return null;
+    var best=null,bd=1e9;
+    for(var i=0;i<f.length;i++){ var d=Math.abs(f[i]-pf); if(d<bd){bd=d;best=f[i];} }
+    return bd>6 ? null : best;
+  }
+  var q=new Int32Array(N), head=0, tail=0, dirs=[1,-1,CG.NX,-CG.NX];
+  NAV[pk]=0; q[tail++]=pk;
+  while(head<tail){
+    var k=q[head++], kf=lvl(k); if(kf===null) continue;
+    var dc=NAV[k];
+    for(var d=0;d<4;d++){
+      var kk=k+dirs[d];
+      if(kk<0||kk>=N||NAV[kk]>=0) continue;
+      if(d<2 && Math.abs((kk%CG.NX)-(k%CG.NX))!==1) continue;   // do not wrap
+      if(CG.play && !CG.play[kk]) continue;
+      var nf=lvl(kk); if(nf===null || Math.abs(nf-kf)>STEPUP) continue;
+      var w=CG.walls[kk], lo=kf+STEPUP+0.06, hi=kf+1.70, hit=false;
+      if(w) for(var i2=0;i2<w.length;i2+=2) if(w[i2]<hi&&w[i2+1]>lo){ hit=true; break; }
+      if(hit) continue;
+      NAV[kk]=dc+1; q[tail++]=kk;
+    }
+  }
+  NAVN=tail;
+}
+var _navDirs=[[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
+function navStep(x,z,out){
+  if(!NAV||!CG) return false;
+  var ix=Math.floor((x-CG.X0)/CG.CELL), iz=Math.floor((z-CG.Z0)/CG.CELL);
+  if(ix<0||iz<0||ix>=CG.NX||iz>=CG.NZ) return false;
+  var here=NAV[iz*CG.NX+ix];
+  if(here<0) return false;
+  var best=here, bi=-1;
+  for(var i=0;i<8;i++){
+    var jx=ix+_navDirs[i][0], jz=iz+_navDirs[i][1];
+    if(jx<0||jz<0||jx>=CG.NX||jz>=CG.NZ) continue;
+    var v=NAV[jz*CG.NX+jx];
+    if(v>=0 && v<best){ best=v; bi=i; }
+  }
+  if(bi<0) return false;
+  var L=Math.hypot(_navDirs[bi][0],_navDirs[bi][1]);
+  out.x=_navDirs[bi][0]/L; out.z=_navDirs[bi][1]/L;
+  return true;
+}
+// Patch the holes with actual geometry. Every attempt so far has been a shading
+// trick -- a dark shell, black backfaces -- and none of them is a wall. The play
+// area's perimeter is where the building ends; wherever a perimeter cell has no
+// wall in the grid covering body height, that is a gap you can see and walk
+// through, and it gets a quad.
+function patchGaps(wallTex){
+  if(!CG||!CG.play) return null;
+  var NX=CG.NX, NZ=CG.NZ, C=CG.CELL, X0=CG.X0, Z0=CG.Z0;
+  function floorOf(k){ var f=CG.floors[k]; return (f&&f.length)?f[f.length-1]:null; }
+  function ceilOf(k,fy){ var f=CG.floors[k]; if(!f) return null;
+    for(var i=f.length-1;i>=0;i--) if(f[i]>fy+1.05) return f[i];
+    return null; }
+  // Not "is there a wall" -- "is the opening COVERED". A skirting board overlaps
+  // the band and made the first version skip the cell, leaving the hole above it
+  // exactly where it was. Returns the biggest uncovered run inside [lo,hi].
+  function openRun(k,lo,hi){
+    var w=CG.walls[k];
+    if(!w||!w.length) return hi-lo;
+    var sp=[];
+    for(var i=0;i<w.length;i+=2) if(w[i+1]>lo && w[i]<hi) sp.push([Math.max(lo,w[i]), Math.min(hi,w[i+1])]);
+    if(!sp.length) return hi-lo;
+    sp.sort(function(a,b){return a[0]-b[0];});
+    var worst=sp[0][0]-lo, cur=sp[0][1];
+    for(var j=1;j<sp.length;j++){
+      if(sp[j][0]>cur) worst=Math.max(worst, sp[j][0]-cur);
+      cur=Math.max(cur, sp[j][1]);
+    }
+    return Math.max(worst, hi-cur);
+  }
+  // Leave the windows alone: they are supposed to be openings, the boards are
+  // the barrier, and the zombies climb through them.
+  function nearBarrier(x,z){
+    for(var i=0;i<BARRIERS.length;i++){
+      var b=BARRIERS[i];
+      if(Math.hypot(b.x-x, b.z-z) < 2.2) return true;
+    }
+    return false;
+  }
+  var P=[], N=[], UV=[], gaps=0, lids=0;
+  function quad(ax,ay,az, bx,by,bz, cx,cy,cz, dx2,dy2,dz2, nx,ny,nz, uw,uh){
+    // two triangles, UVs in metres so the texture keeps its scale
+    var v=[[ax,ay,az],[bx,by,bz],[cx,cy,cz], [ax,ay,az],[cx,cy,cz],[dx2,dy2,dz2]];
+    var t=[[0,0],[uw,0],[uw,uh], [0,0],[uw,uh],[0,uh]];
+    for(var i=0;i<6;i++){ P.push(v[i][0],v[i][1],v[i][2]); N.push(nx,ny,nz); UV.push(t[i][0],t[i][1]); }
+  }
+  var dirs=[[1,0],[-1,0],[0,1],[0,-1]];
+  for(var iz=0; iz<NZ; iz++) for(var ix=0; ix<NX; ix++){
+    var k=iz*NX+ix;
+    if(!CG.play[k]) continue;
+    var fy=floorOf(k); if(fy===null) continue;
+    var cy=ceilOf(k,fy), top=(cy===null? fy+5.0 : cy);
+    var lo=fy+0.15, hi=Math.min(top, fy+3.2);
+    // --- walls around the edge of the building ---
+    for(var d=0; d<4; d++){
+      var jx=ix+dirs[d][0], jz=iz+dirs[d][1];
+      var outside = (jx<0||jz<0||jx>=NX||jz>=NZ);
+      var kk = outside ? -1 : jz*NX+jx;
+      if(!outside && CG.play[kk]) continue;             // still indoors
+      var openHere = openRun(k,lo,hi);
+      var openThere = outside ? (hi-lo) : openRun(kk,lo,hi);
+      if(Math.min(openHere, openThere) < 0.35) continue; // the model covers it
+      var x0=X0+ix*C, x1=x0+C, z0=Z0+iz*C, z1=z0+C;
+      if(nearBarrier((x0+x1)/2, (z0+z1)/2)) continue;
+      var y0=fy, y1=top;
+      if(d===0)      quad(x1,y0,z0, x1,y0,z1, x1,y1,z1, x1,y1,z0, -1,0,0, C,(y1-y0));
+      else if(d===1) quad(x0,y0,z1, x0,y0,z0, x0,y1,z0, x0,y1,z1,  1,0,0, C,(y1-y0));
+      else if(d===2) quad(x1,y0,z1, x0,y0,z1, x0,y1,z1, x1,y1,z1,  0,0,-1, C,(y1-y0));
+      else           quad(x0,y0,z0, x1,y0,z0, x1,y1,z0, x0,y1,z0,  0,0,1, C,(y1-y0));
+      gaps++;
+    }
+    // --- and a lid where the roof is simply missing ---
+    if(cy===null && !nearBarrier(X0+(ix+0.5)*C, Z0+(iz+0.5)*C)){
+      var lx0=X0+ix*C, lz0=Z0+iz*C, ly=fy+5.0;
+      quad(lx0,ly,lz0, lx0+C,ly,lz0, lx0+C,ly,lz0+C, lx0,ly,lz0+C, 0,-1,0, C,C);
+      lids++;
+    }
+  }
+  if(!P.length) return {gaps:0,lids:0};
+  var g=new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(P),3));
+  g.setAttribute('normal',   new THREE.BufferAttribute(new Float32Array(N),3));
+  g.setAttribute('uv',       new THREE.BufferAttribute(new Float32Array(UV),2));
+  g.computeBoundingSphere(); g.computeBoundingBox();
+  var mat;
+  if(wallTex){ var t2=wallTex.clone(); t2.wrapS=t2.wrapT=THREE.RepeatWrapping; t2.needsUpdate=true;
+    mat=new THREE.MeshStandardMaterial({map:t2, roughness:1, metalness:0, side:THREE.FrontSide});
+    mat.color.setHex(0x9A9188).convertSRGBToLinear(); }
+  else { mat=new THREE.MeshStandardMaterial({roughness:1,metalness:0,side:THREE.FrontSide});
+    mat.color.setHex(0x6B6459).convertSRGBToLinear(); }
+  var mesh=new THREE.Mesh(g,mat);
+  mesh.matrixAutoUpdate=false; mesh.userData.isPatch=true;
+  scene.add(mesh);
+  return {gaps:gaps, lids:lids, tris:P.length/9};
+}
+function cgWallHit(x,z,lo,hi){
+  var k=cgIndex(x,z); if(k<0) return false;
+  var w=CG.walls[k]; if(!w) return false;
+  for(var i=0;i<w.length;i+=2) if(w[i]<hi && w[i+1]>lo) return true;
+  return false;
+}
+// A texture is a cutout if a good share of it is transparent. Measured once per
+// texture off a 32x32 downsample -- cheap, and the only way to tell a chain-link
+// fence from a black square after the material flags have been flattened.
+var _cutCv=null, _cutSeen={};
+function cutoutTexture(t){
+  if(!t || !t.image) return false;
+  if(t.uuid in _cutSeen) return _cutSeen[t.uuid];
+  var out=false;
+  try{
+    if(!_cutCv){ _cutCv=document.createElement('canvas'); _cutCv.width=_cutCv.height=32; }
+    var cx=_cutCv.getContext('2d');
+    cx.clearRect(0,0,32,32); cx.drawImage(t.image,0,0,32,32);
+    var d=cx.getImageData(0,0,32,32).data, n=0;
+    for(var i=3;i<d.length;i+=4) if(d[i]<200) n++;
+    out = n/1024 > 0.1;
+  }catch(e){ out=false; }
+  _cutSeen[t.uuid]=out; return out;
+}
+/* ---------- barriers ----------
+   Zombies come in through the boarded windows, and they take the boards off one
+   at a time before they can climb through. In Black Ops a window holds six
+   boards, a zombie pulls them off one by one (faster each round), and the player
+   earns 10 points for every board they nail back on.
+
+   The planks are already in the model -- each one is a separate connected
+   component of the __Fencing_Weathered_1 mesh, 24 triangles and 1.14m long. So
+   the boards that get torn off are the map's own boards, not something drawn on
+   top of them: split that mesh into one mesh per plank, cluster the planks that
+   sit together into windows, and hiding a mesh IS pulling a board off.         */
+var BARRIERS=[], BARMAT='__Fencing_Weathered_1';
+// Anything measured against the MAP (plank spacing, window size, how far a
+// spawn may be) has to grow with it; anything measured against the PLAYER
+// (body width, step height, reach) must not.
+var MSCALE=1;
+function splitPlanks(mesh){
+  var g=mesh.geometry, pos=g.attributes.position, idx=g.index,
+      n=idx?idx.count:pos.count, T=n/3;
+  var vi=function(i){ return idx?idx.getX(i):i; };
+  var tmp=new THREE.Vector3();
+  function wpos(i){ tmp.fromBufferAttribute(pos,vi(i)).applyMatrix4(mesh.matrixWorld); return tmp; }
+  // Union-find over triangles that share a vertex position: one component per board.
+  var parent=[]; for(var t=0;t<T;t++) parent[t]=t;
+  function find(a){ while(parent[a]!==a) a=parent[a]=parent[parent[a]]; return a; }
+  function uni(a,b){ a=find(a); b=find(b); if(a!==b) parent[b]=a; }
+  var seen={};
+  for(var t2=0;t2<T;t2++) for(var j=0;j<3;j++){
+    var pt=wpos(t2*3+j);
+    var k=Math.round(pt.x*50)+','+Math.round(pt.y*50)+','+Math.round(pt.z*50);
+    if(seen[k]!==undefined) uni(seen[k],t2); else seen[k]=t2;
+  }
+  var byRoot={};
+  for(var t3=0;t3<T;t3++){ var r=find(t3); (byRoot[r]||(byRoot[r]=[])).push(t3); }
+  var parts=[], norm=g.attributes.normal, uv=g.attributes.uv;
+  for(var r2 in byRoot){
+    var tris=byRoot[r2], P2=[], N2=[], U2=[], bb=new THREE.Box3();
+    for(var a=0;a<tris.length;a++) for(var b=0;b<3;b++){
+      var i2=vi(tris[a]*3+b);
+      tmp.fromBufferAttribute(pos,i2).applyMatrix4(mesh.matrixWorld);
+      P2.push(tmp.x,tmp.y,tmp.z); bb.expandByPoint(tmp);
+      if(norm) N2.push(norm.getX(i2),norm.getY(i2),norm.getZ(i2));
+      if(uv) U2.push(uv.getX(i2),uv.getY(i2));
+    }
+    var ng=new THREE.BufferGeometry();
+    ng.setAttribute('position',new THREE.BufferAttribute(new Float32Array(P2),3));
+    if(N2.length) ng.setAttribute('normal',new THREE.BufferAttribute(new Float32Array(N2),3));
+    if(U2.length) ng.setAttribute('uv',new THREE.BufferAttribute(new Float32Array(U2),2));
+    ng.computeBoundingSphere(); ng.computeBoundingBox();
+    var c=new THREE.Vector3(), sz=new THREE.Vector3(); bb.getCenter(c); bb.getSize(sz);
+    parts.push({tris:tris, geo:ng, c:c, size:sz});
+  }
+  return parts;
+}
+function buildBarriers(root){
+  BARRIERS=[];
+  var mesh=null;
+  root.traverse(function(o){ if(!mesh && o.isMesh && o.material && o.material.name===BARMAT) mesh=o; });
+  if(!mesh) { window.__BARRIERS=0; return; }
+  var parts=splitPlanks(mesh);
+  // Cluster planks that sit within a window's width of each other.
+  var used=new Array(parts.length), groups=[];
+  for(var i=0;i<parts.length;i++){
+    if(used[i]) continue;
+    var q=[i]; used[i]=true; var mem=[];
+    while(q.length){ var k=q.pop(); mem.push(k);
+      for(var j=0;j<parts.length;j++)
+        if(!used[j] && parts[k].c.distanceTo(parts[j].c)<1.1*MSCALE){ used[j]=true; q.push(j); } }
+    groups.push(mem);
+  }
+  var taken={};
+  for(var gi=0; gi<groups.length; gi++){
+    var mem2=groups[gi];
+    if(mem2.length<3) continue;
+    var bb=new THREE.Box3();
+    for(var m=0;m<mem2.length;m++) bb.union(parts[mem2[m]].geo.boundingBox);
+    var c2=new THREE.Vector3(), sz2=new THREE.Vector3(); bb.getCenter(c2); bb.getSize(sz2);
+    // A window is upright and about a metre square. Flat clusters at ceiling
+    // height are floorboards, and anything huge is a boarded-over wall.
+    if(sz2.y<0.8*MSCALE || sz2.x>2.4*MSCALE || sz2.z>2.4*MSCALE) continue;
+    // It faces along its thinnest horizontal axis.
+    var ax = sz2.x < sz2.z ? 'x' : 'z';
+    var nx = ax==='x' ? 1 : 0, nz = ax==='x' ? 0 : 1;
+    // Which side is indoors? Not "the side with a floor" -- the model has ground
+    // outside the windows too, and that test put every barrier the wrong way
+    // round, so the zombies climbed OUT of the building. Indoors is the side
+    // towards the room the player starts in; only fall back to the floor test
+    // if that side turns out to be thin air.
+    var sx=MAPSPAWN?MAPSPAWN.x:0, sz3=MAPSPAWN?MAPSPAWN.z:0;
+    var R0=1.1*MSCALE;
+    var sign = Math.hypot(c2.x+nx*R0-sx, c2.z+nz*R0-sz3)
+             < Math.hypot(c2.x-nx*R0-sx, c2.z-nz*R0-sz3) ? 1 : -1;
+    var fNear=mapGroundAt(c2.x+nx*R0*sign, c2.z+nz*R0*sign, c2.y+0.4*MSCALE);
+    var fFar =mapGroundAt(c2.x-nx*R0*sign, c2.z-nz*R0*sign, c2.y+0.4*MSCALE);
+    if(fNear===null && fFar!==null) sign=-sign;
+    var planks=[];
+    for(var m2=0;m2<mem2.length;m2++){
+      var pt2=parts[mem2[m2]];
+      var pm=new THREE.Mesh(pt2.geo, mesh.material);
+      pm.matrixAutoUpdate=false;
+      scene.add(pm);
+      planks.push({mesh:pm, up:true, y:pt2.c.y});
+      taken[mem2[m2]]=true;
+    }
+    planks.sort(function(a2,b2){ return a2.y-b2.y; });   // torn off top-down
+    // A panel across the opening that lights up when you are close enough to
+    // rebuild it. Without it nothing on screen connects the USE button to the
+    // window you are standing at.
+    var gw=Math.max(sz2.x, sz2.z)*1.05, gh=sz2.y*1.05;
+    var glow=new THREE.Mesh(new THREE.PlaneGeometry(gw,gh),
+      new THREE.MeshBasicMaterial({color:0xE9C271,transparent:true,opacity:0,
+        side:THREE.DoubleSide,depthWrite:false,fog:false}));
+    glow.position.set(c2.x+nx*sign*0.06, c2.y, c2.z+nz*sign*0.06);
+    glow.rotation.y = ax==='x' ? Math.PI/2 : 0;
+    glow.renderOrder=2;
+    scene.add(glow);
+    var floorY=mapGroundAt(c2.x+nx*R0*sign, c2.z+nz*R0*sign, c2.y+0.4*MSCALE);
+    BARRIERS.push({
+      x:c2.x, y:c2.y, z:c2.z,
+      nx:nx*sign, nz:nz*sign,                       // unit vector pointing INDOORS
+      inX:c2.x+nx*sign*(0.6+0.5*MSCALE), inZ:c2.z+nz*sign*(0.6+0.5*MSCALE),
+      outX:c2.x-nx*sign*(0.8+0.8*MSCALE),  outZ:c2.z-nz*sign*(0.8+0.8*MSCALE),
+      floorY: floorY===null ? c2.y-sz2.y/2 : floorY,
+      standY: c2.y-sz2.y/2,
+      planks:planks, open:0, rebuildT:0, glow:glow
+    });
+  }
+  // Everything that was not made into a barrier plank stays in the original
+  // mesh; rebuild it without the triangles we took.
+  if(BARRIERS.length){
+    var keep=[], kn=[], ku=[];
+    var g2=mesh.geometry, pos2=g2.attributes.position, idx2=g2.index,
+        nn=idx2?idx2.count:pos2.count, nrm=g2.attributes.normal, uv2=g2.attributes.uv;
+    var drop={};
+    for(var ti in taken){ var pr=parts[ti]; for(var z2=0;z2<pr.tris.length;z2++) drop[pr.tris[z2]]=1; }
+    for(var t4=0;t4<nn/3;t4++){
+      if(drop[t4]) continue;
+      for(var b4=0;b4<3;b4++){
+        var i4=idx2?idx2.getX(t4*3+b4):(t4*3+b4);
+        keep.push(pos2.getX(i4),pos2.getY(i4),pos2.getZ(i4));
+        if(nrm) kn.push(nrm.getX(i4),nrm.getY(i4),nrm.getZ(i4));
+        if(uv2) ku.push(uv2.getX(i4),uv2.getY(i4));
+      }
+    }
+    var rg=new THREE.BufferGeometry();
+    rg.setAttribute('position',new THREE.BufferAttribute(new Float32Array(keep),3));
+    if(kn.length) rg.setAttribute('normal',new THREE.BufferAttribute(new Float32Array(kn),3));
+    if(ku.length) rg.setAttribute('uv',new THREE.BufferAttribute(new Float32Array(ku),2));
+    rg.computeBoundingSphere(); rg.computeBoundingBox();
+    mesh.geometry=rg;
+  }
+  window.__BARRIERS=BARRIERS.length;
+}
+// One board, the points for it, and the prompt kept in step.
+var autoRebuild=null, glowT=0;
+function nailOne(b){
+  if(!nailBoard(b)) return false;
+  b.rebuildT=0.55; P.pts+=10; woodSnap(false); hud();
+  if(barrierBoardsLeft(b)>=b.planks.length){ toast('Barrier repaired'); autoRebuild=null; }
+  checkNear();
+  return true;
+}
+// A gun on the wall. Positions come from the collision grid the same way the
+// barriers and spawn points do: find a cell in the play area with a full-height
+// wall on one side and floor to stand on, far enough from the spawn to be worth
+// walking to, and hang the panel on that wall.
+var WALLBUYS=[];
+function buildWallBuys(){
+  WALLBUYS=[];
+  if(!CG||!CG.play||!MAPSPAWN) return;
+  var NX=CG.NX, C=CG.CELL, cand=[], dirs=[[1,0],[-1,0],[0,1],[0,-1]];
+  for(var iz=1;iz<CG.NZ-1;iz++) for(var ix=1;ix<NX-1;ix++){
+    var k=iz*NX+ix;
+    if(!CG.play[k]) continue;
+    var f=CG.floors[k]; if(!f||!f.length) continue;
+    var fy=f[f.length-1];
+    if(Math.abs(fy-MAPSPAWN.y)>1.0) continue;             // same storey
+    var x=CG.X0+(ix+0.5)*C, z=CG.Z0+(iz+0.5)*C;
+    var d=Math.hypot(x-MAPSPAWN.x, z-MAPSPAWN.z);
+    if(d<4 || d>16) continue;
+    if(nearBarrierSpot(x,z)) continue;
+    for(var di=0;di<4;di++){
+      var jx=ix+dirs[di][0], jz=iz+dirs[di][1], kk=jz*NX+jx;
+      var w=CG.walls[kk];
+      if(!w) continue;
+      var tall=false;
+      for(var i2=0;i2<w.length;i2+=2) if(w[i2]<=fy+0.5 && w[i2+1]>=fy+2.0){ tall=true; break; }
+      if(!tall) continue;
+      cand.push({x:x, z:z, fy:fy, nx:-dirs[di][0], nz:-dirs[di][1], d:d});
+      break;
+    }
+  }
+  if(!cand.length) return;
+  cand.sort(function(a,b){ return Math.abs(a.d-8) - Math.abs(b.d-8); });  // ~8m out
+  var pick=cand[0];
+  // Half a cell was a guess, and the wall in this model carries a deep ornate
+  // moulding -- the gun ended up INSIDE it, correctly placed and invisible.
+  // Walk out from the wall until the grid says the cell is clear, then stand the
+  // panel that far out with the gun in front of it.
+  var standoff=C*0.5;
+  for(var so=0; so<6; so++){
+    var tx=pick.x-pick.nx*standoff, tz=pick.z-pick.nz*standoff;
+    if(!cgWallHit(tx, tz, pick.fy+1.2, pick.fy+2.1)) break;
+    standoff -= C*0.25;
+  }
+  if(standoff<-C) standoff=0;
+  var wx=pick.x-pick.nx*standoff, wz=pick.z-pick.nz*standoff;
+  var rot=Math.atan2(pick.nx, pick.nz);
+  // A chalk outline painted on the wall, the way a wall buy actually looks --
+  // not a lit box with a model on it. Drawn to a canvas so it is one
+  // transparent plane rather than geometry standing proud of the wall, which is
+  // what kept ending up buried in the moulding.
+  var grp=new THREE.Group();
+  var chalk=new THREE.Mesh(new THREE.PlaneGeometry(1.75,0.88),
+    new THREE.MeshBasicMaterial({map:chalkTexture('mp40'), transparent:true,
+      opacity:0.72, side:THREE.DoubleSide, depthWrite:false}));
+  chalk.position.set(0, pick.fy+1.58, 0.04);
+  chalk.renderOrder=3;
+  grp.add(chalk);
+  grp.position.set(wx, 0, wz); grp.rotation.y=rot;
+  scene.add(grp);
+  WALLBUYS.push({x:pick.x, z:pick.z, fy:pick.fy, key:'mp40',
+                 name:GUNS.mp40.name, cost:1000, grp:grp, glow:chalk});
+  window.__WALLBUYS=WALLBUYS.length;
+}
+// An MP40 in white line, drawn rather than modelled: barrel, front sight,
+// receiver, magazine, grip and the folding stock.
+function chalkTexture(kind){
+  var W=512, H=256;
+  var cv=document.createElement('canvas'); cv.width=W; cv.height=H;
+  var g=cv.getContext('2d');
+  g.clearRect(0,0,W,H);
+  g.strokeStyle='#ffffff'; g.lineWidth=5; g.lineJoin='round'; g.lineCap='round';
+  g.shadowColor='rgba(255,255,255,.5)'; g.shadowBlur=6;
+  function path(pts, close){
+    g.beginPath(); g.moveTo(pts[0][0],pts[0][1]);
+    for(var i=1;i<pts.length;i++) g.lineTo(pts[i][0],pts[i][1]);
+    if(close) g.closePath();
+    g.stroke();
+  }
+  path([[36,120],[150,120],[150,136],[36,136]], true);          // barrel
+  path([[52,120],[52,104],[62,104],[62,120]]);                  // front sight
+  path([[150,106],[300,106],[300,150],[150,150]], true);        // receiver
+  path([[196,150],[232,150],[232,228],[200,228]], true);        // magazine
+  path([[286,150],[316,150],[310,206],[282,206]], true);        // grip
+  path([[300,118],[372,118],[372,132],[300,132]], true);        // stock strut
+  path([[372,125],[404,125],[404,160],[392,160]]);              // shoulder plate
+  g.lineWidth=4;                                                // the tick marks
+  path([[438,96],[438,116]]); path([[452,124],[468,124]]); path([[438,152],[438,172]]);
+  var t=new THREE.CanvasTexture(cv);
+  t.anisotropy=4; t.needsUpdate=true;
+  return t;
+}
+// The map and the gun models load independently, and the map usually wins, so
+// building the mount inline left an empty panel on the wall. Run it again every
+// time a model lands.
+function mountWallGuns(){
+  for(var i=0;i<WALLBUYS.length;i++){
+    var wb=WALLBUYS[i];
+    if(wb.mounted) continue;
+    var spec=GUNPROTOS[wb.key];
+    if(!spec) continue;
+    var gm=spec.root.clone(true);
+    gm.scale.setScalar(1); gm.position.set(0,0,0); gm.rotation.set(0,0,0);
+    gm.updateMatrixWorld(true);
+    var bb=new THREE.Box3().setFromObject(gm), sz=new THREE.Vector3(), cc=new THREE.Vector3();
+    bb.getSize(sz); bb.getCenter(cc);
+    var longest=Math.max(sz.x,sz.y,sz.z);
+    var k2=longest>0.0001 ? 1.15/longest : 1;
+    gm.scale.setScalar(k2);
+    gm.position.set(-cc.x*k2, -cc.y*k2, -cc.z*k2);
+    gm.traverse(function(o){ if(o.isMesh){ o.frustumCulled=false;
+      if(o.material){ o.material=o.material.clone();
+        o.material.metalness=0.25; o.material.roughness=0.6;
+        o.material.emissive=new THREE.Color(0x2a2520);   // lifts it off a dark wall
+        o.material.needsUpdate=true; } } });
+    var mount=new THREE.Group();
+    mount.add(gm);
+    mount.rotation.set(0, spec.axis==='z' ? Math.PI/2 : 0, -0.08);
+    mount.position.set(0, wb.fy+1.62, 0.26);   // clear of the wall moulding
+    wb.grp.add(mount);
+    wb.mounted=true;
+  }
+}
+function nearBarrierSpot(x,z){
+  for(var i=0;i<BARRIERS.length;i++)
+    if(Math.hypot(BARRIERS[i].x-x, BARRIERS[i].z-z) < 2.5) return true;
+  return false;
+}
+function barrierBoardsLeft(b){ var n=0; for(var i=0;i<b.planks.length;i++) if(b.planks[i].up) n++; return n; }
+// Pull one off, top board first -- that is the order they come off on screen.
+function tearBoard(b){
+  for(var i=b.planks.length-1;i>=0;i--) if(b.planks[i].up){
+    b.planks[i].up=false; b.planks[i].mesh.visible=false;
+    puff(new THREE.Vector3(b.x,b.planks[i].y,b.z));
+    woodSnap(true);
+    return true;
+  }
+  return false;
+}
+function nailBoard(b){
+  for(var i=0;i<b.planks.length;i++) if(!b.planks[i].up){
+    b.planks[i].up=true; b.planks[i].mesh.visible=true;
+    return true;
+  }
+  return false;
+}
+// Where the player starts on an imported map, and where zombies come from.
+var MAPSPAWN=null, MAPSPAWNPTS=null;
+// The imported map has no window list to hang spawns off, so find standing room
+// the same way the player's feet do: ring the spawn, keep the points that sit on
+// the same floor with headroom above them.
+function buildMapSpawns(){
+  if(!MAPSPAWN) return;
+  var pts=[];
+  // A grid, not a ring: this lobby is nine metres across, so a ring at any one
+  // radius lands entirely in the walls. Cast from just above the floor -- from
+  // overhead the ray meets the CEILING first and every cell looks four metres
+  // too high, which is how the first pass found nothing at all.
+  var RNG=26*MSCALE, STEP=1.5*MSCALE;
+  for(var x=-RNG;x<=RNG;x+=STEP){
+    for(var z=-RNG;z<=RNG;z+=STEP){
+      var d=Math.hypot(x-MAPSPAWN.x, z-MAPSPAWN.z);
+      if(d<3.5*MSCALE || d>14*MSCALE) continue;  // further than this and they are
+                                    // in a room with no path back to you
+      var fy=mapGroundAt(x,z,MAPSPAWN.y+1.2);
+      if(fy===null || Math.abs(fy-MAPSPAWN.y)>1.2) continue;
+      if(mapCeilAt(x,z,fy) < 1.0) continue;         // no headroom: inside a wall
+      if(!cgInPlay(x,z) || cgOutsideAt(x,z,fy)) continue;   // out in the street
+      pts.push({x:x, z:z, y:fy, a:0});
+    }
+  }
+  if(pts.length>=3) MAPSPAWNPTS=pts;
+  window.__MAPSPAWNS=pts.length;
+}
+function mapGroundAt(x,z,fromY){
+  var k=cgIndex(x,z); if(k<0) return null;
+  var f=CG.floors[k]; if(!f) return null;
+  for(var i=0;i<f.length;i++) if(f[i]<=fromY+0.05) return f[i];
+  return null;
+}
+function mapBlocked(fromX,fromY,fromZ,dx,dz){
+  if(!CG) return false;
+  var len=Math.hypot(dx,dz);
+  if(len<0.0001) return false;
+  var ux=dx/len, uz=dz/len;
+  // Measure the body from the FLOOR, not from the height the caller passed.
+  // Anchored to the caller, the bottom of the body sat 0.55 above the tread you
+  // were on -- and the riser two or three steps up the flight reached into that
+  // band and read as a wall, so you could jump up a staircase but not walk it.
+  // The band has to start above STEPUP, since anything lower is a step the
+  // floor test below will judge instead.
+  var here=mapGroundAt(fromX,fromZ,fromY+0.8);
+  var lo, hi;
+  if(here!==null){
+    lo=here+STEPUP+0.06;
+    // Duck rather than refuse. A fixed 1.75 body walled the player out of every
+    // low opening in the model, Quick Revive's among them; under a low lintel
+    // you crouch, and only an opening under 0.95 is impassable.
+    var ceilAhead=mapCeilAt(fromX+ux*(len+0.40), fromZ+uz*(len+0.40), here);
+    if(ceilAhead<0.95) return true;
+    hi=here+Math.min(1.75, ceilAhead-0.10);
+    if(hi<=lo) hi=lo+0.05;
+  }
+  else { lo=fromY-0.30; hi=fromY+0.40; }
+  if(cgWallHit(fromX+ux*(len+0.24), fromZ+uz*(len+0.24), lo, hi)) return true;
+  if(cgWallHit(fromX+ux*(len+0.50), fromZ+uz*(len+0.50), lo, hi)) return true;
+  // Low obstacles are judged by the floor instead: a tread is a step up, a
+  // parapet is a wall.
+  var there=mapGroundAt(fromX+ux*0.75, fromZ+uz*0.75, fromY+0.8);
+  if(there===null) return false;            // over an edge: gravity's problem
+  if(here!==null && there-here>STEPUP) return true;
+  // Don't walk out of the building -- through the back door, or over the roof.
+  // Already outside (a zombie at a window, or a bad drop) you may still move, or
+  // you would be stuck in the street.
+  var ox=fromX+ux*(len+0.45), oz=fromZ+uz*(len+0.45);
+  // Off the edge of the playable area, by any route.
+  if(CG.play && cgInPlay(fromX,fromZ) && !cgInPlay(ox,oz)) return true;
+  // And a second guard for the level you are actually on, so you cannot walk
+  // out over the roof of a room that is itself in play.
+  if(here!==null && cgOutsideAt(ox,oz,there) && !cgOutsideAt(fromX,fromZ,here)) return true;
+  return false;
+}
+function box(x,y,z,w,h,d,mat,solid){
+  var m=new THREE.Mesh(BOX,mat||M.wall);
+  m.position.set(x,y+h/2,z);m.scale.set(w,h,d);scene.add(m);
+  if(solid!==false&&h>1.2)walls.push({x0:x-w/2,x1:x+w/2,z0:z-d/2,z1:z+d/2});
+  return m;
+}
+function plane(x,y,z,w,d,mat,flip){
+  var m=new THREE.Mesh(new THREE.PlaneGeometry(w,d),mat);
+  m.rotation.x=flip?Math.PI/2:-Math.PI/2;m.position.set(x,y,z);scene.add(m);return m;
+}
+function column(x,z,h,r){
+  var g=new THREE.CylinderGeometry(r,r*1.1,h,10);
+  var m=new THREE.Mesh(g,M.wall);m.position.set(x,h/2,z);scene.add(m);
+  var cap=new THREE.Mesh(BOX,M.gilt);cap.position.set(x,h-0.16,z);cap.scale.set(r*2.9,0.32,r*2.9);scene.add(cap);
+  var bas=new THREE.Mesh(BOX,M.gilt);bas.position.set(x,0.16,z);bas.scale.set(r*2.9,0.32,r*2.9);scene.add(bas);
+  walls.push({x0:x-r,x1:x+r,z0:z-r,z1:z+r});
+}
+function lamp(x,y,z,col,power,dist){
+  var l=new THREE.PointLight(col,power,dist||18,2);l.position.set(x,y,z);scene.add(l);
+  var b=new THREE.Mesh(new THREE.SphereGeometry(0.1,6,5),new THREE.MeshBasicMaterial({color:col}));
+  b.position.set(x,y,z);scene.add(b);return l;
+}
+function chandelier(x,z,y){
+  var grp=new THREE.Group();
+  var ring=new THREE.Mesh(new THREE.TorusGeometry(0.85,0.055,6,16),M.gilt);
+  ring.rotation.x=Math.PI/2;grp.add(ring);
+  var rod=new THREE.Mesh(new THREE.CylinderGeometry(0.03,0.03,1.2,6),M.gilt);
+  rod.position.y=0.6;grp.add(rod);
+  for(var i=0;i<6;i++){
+    var a=i/6*Math.PI*2;
+    var c=new THREE.Mesh(new THREE.ConeGeometry(0.09,0.26,6),new THREE.MeshBasicMaterial({color:0xFFD9A0}));
+    c.position.set(Math.cos(a)*0.85,0.08,Math.sin(a)*0.85);grp.add(c);
+  }
+  grp.position.set(x,y,z);scene.add(grp);
+  lamp(x,y-0.3,z,0xFFC98A,1.5,20);
+}
+
+/* ---------- the map ---------- */
+var doors=[],buys=[];
+function addDoor(x,z,w,label,cost){
+  var g=new THREE.Group();
+  var d1=new THREE.Mesh(BOX,M.wood);d1.scale.set(w/2-0.04,4.4,0.16);d1.position.set(-w/4,2.2,0);g.add(d1);
+  var d2=new THREE.Mesh(BOX,M.wood);d2.scale.set(w/2-0.04,4.4,0.16);d2.position.set(w/4,2.2,0);g.add(d2);
+  for(var i=0;i<2;i++){
+    var p=new THREE.Mesh(BOX,M.gilt);p.scale.set(w/2-0.5,3.4,0.03);
+    p.position.set(i?w/4:-w/4,2.2,0.1);g.add(p);
+  }
+  // boards nailed across, so a locked door reads as barricaded
+  for(var b=0;b<3;b++){
+    var pl=new THREE.Mesh(BOX,M.wood);pl.scale.set(w+0.5,0.3,0.1);
+    pl.position.set(0,1.1+b*1.25,0.2);pl.rotation.z=(b%2?1:-1)*0.055;g.add(pl);
+  }
+  g.position.set(x,0,z);scene.add(g);
+  var wall={x0:x-w/2,x1:x+w/2,z0:z-0.3,z1:z+0.3};walls.push(wall);
+  return {grp:g,wall:wall,x:x,z:z,label:label,cost:cost,open:false};
+}
+function addDoorX(x,z,w,label,cost){
+  var g=new THREE.Group();
+  var d1=new THREE.Mesh(BOX,M.wood);d1.scale.set(0.16,4.4,w/2-0.04);d1.position.set(0,2.2,-w/4);g.add(d1);
+  var d2=new THREE.Mesh(BOX,M.wood);d2.scale.set(0.16,4.4,w/2-0.04);d2.position.set(0,2.2, w/4);g.add(d2);
+  for(var b=0;b<3;b++){
+    var pl=new THREE.Mesh(BOX,M.wood);pl.scale.set(0.1,0.3,w+0.5);
+    pl.position.set(0.2,1.1+b*1.25,0);pl.rotation.x=(b%2?1:-1)*0.055;g.add(pl);
+  }
+  g.position.set(x,0,z);scene.add(g);
+  var wall={x0:x-0.3,x1:x+0.3,z0:z-w/2,z1:z+w/2};walls.push(wall);
+  return {grp:g,wall:wall,x:x,z:z,label:label,cost:cost,open:false};
+}
+function addBuy(x,z,rotY,name,cost,key){
+  var g=new THREE.Group();
+  var bd=new THREE.Mesh(BOX,M.conc);bd.scale.set(2.0,1.3,0.12);bd.position.y=2.0;g.add(bd);
+  var gl=new THREE.Mesh(new THREE.PlaneGeometry(1.8,1.1),
+        new THREE.MeshBasicMaterial({color:0xE9C271,transparent:true,opacity:0.14}));
+  gl.position.set(0,2.0,0.08);g.add(gl);
+  g.position.set(x,0,z);g.rotation.y=rotY;scene.add(g);
+  lamp(x+Math.sin(rotY)*0.6,2.6,z+Math.cos(rotY)*0.6,0xE9C271,0.5,5);
+  return {x:x,z:z,name:name,cost:cost,key:key,grp:g};
+}
+
+function buildMap(){
+  // ---- SPAWN ROOM ----
+  // Built from reference. Two flights climb left and right and MEET at a
+  // central landing across the back; an arched passage runs underneath it.
+  // Chandelier centre, coffered ceiling, arched niches down the walls,
+  // Quick Revive in a right-hand alcove, teleporter pad on the floor.
+  var HW=11.5, HZ1=19.0, CEIL=7.0, MEZZ=4.6;
+  plane(0,0,HZ1/2, HW*2, HZ1, M.lobbyFloor);
+  plane(0,CEIL,HZ1/2, HW*2, HZ1, M.ceiling, true);
+
+  // coffered ceiling: a grid of sunken panels reads as period plasterwork
+  for(var cx=-9;cx<=9;cx+=4.5){
+    box(cx,CEIL-0.35,HZ1/2,0.45,0.35,HZ1-1.0,M.gilt,false);
+  }
+  for(var cz=3;cz<=HZ1-2;cz+=4.5){
+    box(0,CEIL-0.35,cz,HW*2-1.0,0.35,0.45,M.gilt,false);
+  }
+
+  WINDOWS=[];
+  function wallRun(wx,gaps){
+    var at=0.0, segs=[];
+    gaps.forEach(function(g){ segs.push([at,g[0]]); at=g[1]; });
+    segs.push([at,HZ1]);
+    segs.forEach(function(sg){
+      var L=sg[1]-sg[0]; if(L<=0.05) return;
+      box(wx,0,(sg[0]+sg[1])/2,.7,CEIL,L,M.wall);
+    });
+    gaps.forEach(function(g){
+      var c=(g[0]+g[1])/2, L=g[1]-g[0];
+      box(wx,0,c,.7,1.0,L,M.wall,false);
+      box(wx,2.9,c,.7,CEIL-2.9,L,M.wall,false);
+      WINDOWS.push({x:wx,z:c,rot:Math.PI/2});
+    });
+  }
+  box(0,0,0,HW*2,CEIL,.7,M.wall);                       // solid behind you
+  wallRun(-HW,[[3.2,5.6],[8.4,10.8]]);
+  wallRun( HW,[[3.2,5.6]]);
+
+  // tall arched niches down the right wall, as in the reference
+  for(var nz=8.0;nz<17.0;nz+=2.9){
+    box(HW-0.45,0.4,nz,0.35,4.4,2.0,M.wallRed,false);
+    box(HW-0.5,4.8,nz,0.5,0.4,2.3,M.gilt,false);
+  }
+
+  // --- twin flights meeting at a central landing ---
+  var SZ0=4.0, SZ1=14.6, STEPS=18, SW=3.6;
+  var sd=(SZ1-SZ0)/STEPS, sr=MEZZ/STEPS;
+  [-1,1].forEach(function(side){
+    var cx=side*(HW-SW/2-0.5);
+    for(var i=0;i<STEPS;i++){
+      box(cx,(i+1)*sr-sr, SZ0+i*sd+sd/2, SW, sr, sd, M.wood, false);
+    }
+    RAMPS.push({x0:cx-SW/2,x1:cx+SW/2,z0:SZ0,z1:SZ1,y0:0,y1:MEZZ});
+    box(cx-side*(SW/2+0.3),0,(SZ0+SZ1)/2,0.45,MEZZ+0.5,SZ1-SZ0,M.wall);
+  });
+  // the landing both flights arrive on, spanning the back
+  PLATFORMS.push({x0:-HW,x1:HW,z0:SZ1,z1:HZ1,y:MEZZ});
+  box(0,MEZZ-0.35,(SZ1+HZ1)/2,HW*2,0.35,HZ1-SZ1,M.wood,false);
+  if(PROPS.railing){
+    for(var rx=-9.6;rx<=9.6;rx+=2.6){
+      if(Math.abs(rx)>HW-SW-1.0) continue;
+      place('railing', rx, SZ1-0.15, {size:2.6, y:MEZZ, rotY:0});
+    }
+  }
+  // the arch underneath, leading onward
+  var AW=5.4;
+  box(-(AW/2+(HW-AW/2)/2),0,SZ1+1.2,HW-AW/2,MEZZ,0.6,M.wall);
+  box( (AW/2+(HW-AW/2)/2),0,SZ1+1.2,HW-AW/2,MEZZ,0.6,M.wall);
+  for(var ai=0;ai<7;ai++){                                  // stepped arch head
+    var t=(ai+0.5)/7, aw=AW*Math.sqrt(1-Math.pow(2*t-1,2));
+    box(0,MEZZ-0.55-ai*0.14,SZ1+1.2,Math.max(0.3,AW-aw),0.16,0.62,M.gilt,false);
+  }
+  lamp(0,2.4,SZ1+2.6,0xFFC890,1.6,13);                      // light through the arch
+
+  // --- Quick Revive alcove, right-hand wall ---
+  var QX0=HW, QX1=HW+5.2, QZ0=12.0, QZ1=17.0;
+  plane((QX0+QX1)/2,0,(QZ0+QZ1)/2, QX1-QX0, QZ1-QZ0, M.lobbyFloor);
+  plane((QX0+QX1)/2,4.6,(QZ0+QZ1)/2, QX1-QX0, QZ1-QZ0, M.ceiling, true);
+  box((QX0+QX1)/2,0,QZ0,QX1-QX0,4.6,.7,M.wall);
+  box((QX0+QX1)/2,0,QZ1,QX1-QX0,4.6,.7,M.wall);
+  box(QX1,0,(QZ0+QZ1)/2,.7,4.6,QZ1-QZ0,M.wall);
+  box(HW,0,(QZ0+QZ1)/2,.7,4.6,QZ1-QZ0,M.wall,false);        // opening in the side wall
+  lamp(QX1-1.6,2.8,(QZ0+QZ1)/2,0x6FC0E8,2.2,11);
+  if(PROPS.perks) place('perks', QX1-1.5, (QZ0+QZ1)/2, {size:2.2, rotY:-Math.PI/2, solid:true});
+
+  // banners
+  [[-HW+0.6,6.5,Math.PI/2],[HW-0.6,9.5,-Math.PI/2]].forEach(function(bn){
+    var ban=new THREE.Mesh(new THREE.PlaneGeometry(1.5,3.4),
+      new THREE.MeshStandardMaterial({color:0x7A1410,roughness:1,side:THREE.DoubleSide}));
+    ban.position.set(bn[0],3.6,bn[1]); ban.rotation.y=bn[2]; scene.add(ban);
+  });
+
+  chandelier(0,8.5,CEIL-1.0);
+  lamp(-7.0,4.4,3.0,0xFFBE78,1.3,15); lamp(7.0,4.4,3.0,0xFFBE78,1.3,15);
+  lamp(0,4.6,9.5,0xFFD2A0,1.1,16);
+
+  doors.push(addDoorX(-HW,9.6,2.4,'Open the doors',750));
+
+  // ---- CORRIDOR ----
+  plane(0,0,-7,9,13,M.corrFloor); plane(0,4.6,-7,9,13,M.ceiling,true);
+  box(-4.7,0,-7,.7,4.6,13,M.conc); box(4.7,0,-7,.7,4.6,13,M.conc);
+  lamp(0,3.9,-3.5,0xC87A48,1.6,15); lamp(0,3.9,-8,0xB05C34,1.4,14);
+  lamp(0,3.9,-12,0xA04E2E,1.2,13);
+  doors.push(addDoor(0,-13.4,5.6,'Open the auditorium',1250));
+
+  // ---- AUDITORIUM ----
+  plane(0,0,-28,32,30,M.hallFloor); plane(0,8.2,-28,32,30,M.ceiling,true);
+  box(-16.2,0,-28,.7,8.2,30,M.wallRed); box(16.2,0,-28,.7,8.2,30,M.wallRed);
+  box(-10.5,0,-13.4,11,8.2,.7,M.wallRed); box(10.5,0,-13.4,11,8.2,.7,M.wallRed);
+  // proscenium + stage
+
+  box(0,6.4,-34.2,25,1.8,1.2,M.gilt,false);
+  column(-11.6,-33.8,6.4,.6); column(11.6,-33.8,6.4,.6);
+  // balcony
+  box(-16,4.4,-24,1.6,.5,18,M.gilt,false); box(16,4.4,-24,1.6,.5,18,M.gilt,false);
+  // seating
+
+  chandelier(0,-24,7.6); chandelier(-9,-31,7.2); chandelier(9,-31,7.2);
+  lamp(0,2.2,-37,0x6E8CC8,1.3,22);
+  lamp(-14,2.6,-20,0xB02A1E,1.1,16); lamp(14,2.6,-20,0xB02A1E,1.1,16);
+  lamp(-7,3.4,-26,0xFF9A5A,0.9,15); lamp(7,3.4,-26,0xFF9A5A,0.9,15);
+  buys.push(addBuy(-15.4,-24,Math.PI/2,'Trench Gun',1500,'shotgun'));
+  buys.push(addBuy(15.4,-24,-Math.PI/2,'Carbine',1200,'rifle'));
+}
+// ?map=<name> swaps the hand-built rooms for a Collada map, so a downloaded
+// layout can be judged by walking it rather than guessed at from an orbit view.
+// Kino IS the game now, so it is the default. ?map=off plays the hand-built
+// rooms, ?map=<name> loads another Collada folder.
+var DAEMAP=(function(){
+  var m=/[?&]map=([A-Za-z0-9_-]+)/.exec(location.search);
+  return m ? m[1] : 'kino';
+})();
+var MOBILE=matchMedia('(pointer:coarse)').matches||'ontouchstart' in window;
+// Phones used to be sent to the hand-built map, from when this was 255k
+// triangles with no viewport meta and a 8-megapixel canvas. The map is the game
+// now, so they get it; the pixel ratio cap and the viewport tag carry the load,
+// and ?map=off falls back if a device cannot cope. The crash beacon reports it
+// either way.
+if(DAEMAP==='off'){
+  DAEMAP=null;
+  buildMap();
+} else if(DAEMAP){
+  pending++;                                   // gate Start on the map arriving
+  // GLB where one exists. Collada reported this map's size three different ways
+  // depending on when it was asked; a GLB declares its bounds in the file and
+  // has measured correctly every time today.
+  var loadMap = (DAEMAP==='kino')
+    ? function(cb,err){ new THREE.GLTFLoader().load('models/kino.glb',
+        function(g){ cb({scene:g.scene}); }, undefined, err); }
+    : function(cb,err){ new THREE.ColladaLoader().load('kino/'+DAEMAP+'/model.dae', cb, undefined, err); };
+  loadMap(function(col){
+   try{
+    // Lights FIRST. They were added after the measuring code, so any throw in
+    // there left the map loaded but pitch black -- which is indistinguishable
+    // from the map not loading at all.
+    //
+    // ONE set, and the scene's own lights go first. There were three stacked
+    // sets -- the base scene's, one here, and another further down -- totalling
+    // 1.6 ambient, 1.6 hemisphere and 2.2 directional. At that much light a
+    // mid-grey surface clips to pure white, which is what the white wedges on
+    // the stairs and walls were: not missing textures, blown-out ones.
+    (function(){
+      var kill=[];
+      scene.traverse(function(o){
+        if(o.isAmbientLight||o.isHemisphereLight||o.isDirectionalLight) kill.push(o);
+      });
+      kill.forEach(function(o){ if(o.parent) o.parent.remove(o); });
+    })();
+    scene.add(new THREE.AmbientLight(0xFFFFFF,0.30));
+    scene.add(new THREE.HemisphereLight(0xBFC8DD,0x2A2520,0.35));
+    var sunA=new THREE.DirectionalLight(0xFFF2DC,0.55); sunA.position.set(1,2,1); scene.add(sunA);
+    var sunB=new THREE.DirectionalLight(0xBFD0FF,0.20); sunB.position.set(-1,1.5,-1); scene.add(sunB);
+    // No tone mapping: ACES changed the whole look for the worse and the
+    // clipping it was covering for is gone now the lights are not tripled and
+    // the untextured fill is the colour it was meant to be. ?aces=1 to compare.
+    if(/[?&]aces=1/.test(location.search)){
+      renderer.toneMapping=THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure=1.25;
+    }
+    scene.fog=null;
+    var root=col.scene;
+    // SketchUp exports its EDGES as line primitives, and the GLB carries 85,734
+    // vertices of them: a grey wireframe drawn over every surface in the map.
+    // That is the "white lines around everything" -- nothing to do with
+    // materials, lighting or depth, which is where three separate hunts looked.
+    (function(){
+      var lines=[];
+      root.traverse(function(o){ if(o.isLine||o.isLineSegments||o.isLineLoop) lines.push(o); });
+      lines.forEach(function(o){ if(o.parent) o.parent.remove(o);
+        if(o.geometry) o.geometry.dispose(); });
+      window.__MAPLINES=lines.length;
+    })();
+    // assimp writes KHR_materials_volume / _ior onto everything, so every
+    // surface arrives as dark glass and no amount of light will show it.
+    // Flatten each material back to a plain opaque one.
+    root.traverse(function(o){ if(o.isMesh){ o.frustumCulled=true;
+      var mm=[].concat(o.material);
+      mm.forEach(function(x){
+        if(!x) return;
+        // FrontSide. DoubleSide cured the see-through walls but drew the
+        // model's entire structural shell from the inside as well, which is flat
+        // grey everywhere you look -- far worse than the holes it fixed. Gaps
+        // get real geometry from patchGaps() instead.
+        x.side=THREE.FrontSide;
+        x.metalness=0; x.roughness=1;
+        x.transmission=0; x.thickness=0; x.attenuationDistance=Infinity;
+        x.ior=1.5; x.transparent=false; x.opacity=1; x.depthWrite=true;
+        x.emissive=new THREE.Color(0x000000);
+        // SketchUp stacks faces exactly on top of each other; nudging them in
+        // depth is what stops the tearing when the camera moves.
+        // No blanket polygon offset: shifting every surface by the same amount
+        // resolves nothing between two of them.
+        x.polygonOffset=false;
+        // The black-and-white speckle is alpha testing, not z-fighting: assimp
+        // marks materials MASK and Three then dithers every texel below the
+        // cutoff. These surfaces are all opaque.
+        x.alphaTest=0; x.alphaMap=null; x.format=THREE.RGBAFormat;
+        if(x.map){ x.map.premultiplyAlpha=false; }
+        // convertSRGBToLinear, or this does NOT come out as #6B6459. The
+        // renderer encodes to sRGB on output, so a hex set straight onto the
+        // material is treated as linear and displays as #ADA89F -- a pale grey.
+        // That is what the white wedges on the stairs and walls really were:
+        // 76-100% of these surfaces were rendering pale.
+        if(!x.map && x.color) x.color.setHex(0x6B6459).convertSRGBToLinear();
+        // ...except the cutouts. Chain-link, grilles and foliage carry their
+        // shape in the ALPHA channel; forced opaque they render as solid black
+        // rectangles -- which is exactly what the window grates looked like.
+        if(x.map && cutoutTexture(x.map)){
+          x.alphaTest=0.5; x.transparent=false; x.side=THREE.DoubleSide;
+        }
+        x.needsUpdate=true;
+      }); } });
+    // Update world matrices BEFORE measuring. Without this the box is computed
+    // on identity transforms and comes back nonsense -- it reported this map as
+    // 8.9 units tall when it is 345, so every scale and position derived from
+    // it was wrong by a factor of forty and the camera ended up buried inside.
+    root.updateMatrixWorld(true);
+    var bb=new THREE.Box3(), sz=new THREE.Vector3(), c=new THREE.Vector3();
+    root.traverse(function(o){
+      if(!o.isMesh) return;
+      o.geometry.computeBoundingBox();
+      if(!o.geometry.boundingBox) return;
+      var b=o.geometry.boundingBox.clone(); b.applyMatrix4(o.matrixWorld);
+      bb.union(b);
+    });
+    bb.getSize(sz); bb.getCenter(c);
+    // Normalise to a believable building height; a theatre is ~16 units here.
+    // SketchUp and Collada are Z-up, Three is Y-up. Taller than it is deep
+    // means it has not been converted and is lying on its side.
+    if(sz.z>0.01 && sz.y/sz.z > 1.6){
+      root.rotation.x=-Math.PI/2;
+      root.updateMatrixWorld(true);
+      bb=new THREE.Box3();
+      root.traverse(function(o){
+        if(!o.isMesh) return;
+        o.geometry.computeBoundingBox();
+        if(!o.geometry.boundingBox) return;
+        var b2=o.geometry.boundingBox.clone(); b2.applyMatrix4(o.matrixWorld);
+        bb.union(b2);
+      });
+      bb.getSize(sz); bb.getCenter(c);
+    }
+    // The model came in at roughly half life size: its staircase rises 0.10
+    // units a step where a real step is 0.175, which is why the player and the
+    // zombies both looked oversized -- they are the right height, the building
+    // was not. Scale it up to match. ?mapscale= overrides for tuning.
+    var MS=parseFloat((location.search.match(/[?&]mapscale=([\d.]+)/)||[])[1]);
+    if(!(MS>0.2&&MS<6)) MS=2.0;
+    window.__MAPSCALE=MS; MSCALE=MS;
+    var k=sz.y>0.01 ? 16*MS/sz.y : 1;
+    // Wrap, so the offset applies outside the model's own rotation.
+    var holder=new THREE.Group();
+    holder.add(root);
+    holder.scale.setScalar(k);
+    holder.position.set(-c.x*k, -bb.min.y*k, -c.z*k);
+    scene.add(holder);
+    // No coincident-face dedupe either. SketchUp writes each face twice with
+    // opposite winding, and under FrontSide that pair is exactly what makes a
+    // wall visible from both sides; dropping an arbitrary one of each leaves
+    // walls invisible from whichever side lost.
+    MAPMESHES=[];
+    holder.traverse(function(o){ if(o.isMesh) MAPMESHES.push(o); });
+    buildColliders(holder);
+    // (The map's lights are set up at the top of this callback. A second set
+    // used to be added here, on top of those and the scene's own.)
+    // The model is an interior with holes in it -- missing ceiling over the
+    // lobby windows, gaps where walls meet. Unboxed, every one of those reads
+    // as a pure black rectangle. A dark shell around the whole map turns them
+    // into night instead of holes, which is what is behind the boards anyway.
+    // Every one of these is an sRGB hex and must be converted, or the renderer
+    // treats it as linear and shows it four times too light: 0x0B0D12 displays
+    // as #383D49, a medium blue-grey. The model is full of gaps -- 1.7% of a
+    // frame looking at the ceiling is a genuine hole -- and what showed through
+    // them was that grey, which is where the "white lines around everything"
+    // and the pale wedges by the stairs came from.
+    var shellCol=new THREE.Color(0x0B0D12).convertSRGBToLinear();
+    scene.background=shellCol.clone();
+    scene.fog=new THREE.Fog(shellCol.clone(), 26*MS, 72*MS);
+    var shellSz=Math.max(sz.x,sz.z)*k*3+40;
+    var shell=new THREE.Mesh(new THREE.BoxGeometry(shellSz,shellSz*0.8,shellSz),
+      new THREE.MeshBasicMaterial({color:shellCol.clone(),side:THREE.BackSide,fog:false}));
+    shell.position.y=8; shell.userData.isShell=true; scene.add(shell);
+    // NO BACKFACE SEAL. Drawing every surface a second time from behind in
+    // black looked like the obvious way to plug the model's gaps, and it was
+    // wrong: this model's walls are single-sided and its faces are duplicated
+    // and coincident, so the seal won the depth test across whole surfaces and
+    // painted 11-41% of every view black -- far worse than the holes it hid.
+    // Polygon offset only took that to 12%; the rest is the seal legitimately
+    // drawing the back of walls that have no front face. Holes stay dark via
+    // the shell instead.
+    window.__MAPINFO={rawSize:[+sz.x.toFixed(1),+sz.y.toFixed(1),+sz.z.toFixed(1)],scale:+k.toFixed(4),
+      playSize:[+(sz.x*k).toFixed(1),+(sz.y*k).toFixed(1),+(sz.z*k).toFixed(1)]};
+    // The world matrices are only correct once the holder has been updated --
+    // raycast before that and the ray meets the model in its UNOFFSET position,
+    // which recorded the floor 1.2m too high and dropped the player on spawn.
+    holder.updateMatrixWorld(true);
+    // Kino starts you standing on the teleporter in the middle of the lobby,
+    // facing the grand staircase. Both numbers were read off the model: the pad
+    // is the raised disc at (0.5, 3.4), and the stairs are 60 degrees round.
+    MAPSPAWN={x:0.5*MS, z:3.4*MS, yaw:1.05};
+    (function(){
+      var fy=mapGroundAt(MAPSPAWN.x, MAPSPAWN.z, sz.y*k*0.55);
+      if(fy===null) fy=mapGroundAt(0,0,sz.y*k*0.55);
+      if(fy===null) fy=0;
+      MAPSPAWN.y=fy;
+      P.pos.set(MAPSPAWN.x, fy+EYE, MAPSPAWN.z); P.yaw=MAPSPAWN.yaw;
+      window.__MAPFLOOR=+fy.toFixed(2);
+    })();
+    // No box-projected UVs on the untextured surfaces. Lending them a
+    // concrete texture was meant to fix "the wall is clean", which turned out
+    // to mean see-through, not untextured -- and the lighter concrete made the
+    // structural shell far more obvious everywhere it shows. They stay the dark
+    // flat colour they were.
+    buildPlayArea();
+    buildMapSpawns();
+    buildBarriers(holder);
+    buildWallBuys();
+    // After the barriers, so the windows can be left open.
+    (function(){
+      var wt=null;
+      holder.traverse(function(o){ if(wt||!o.isMesh||!o.material||!o.material.map) return;
+        if(/Concrete|Plaster|Stucco|Stone|Asphalt/i.test(o.material.name||'')) wt=o.material.map; });
+      window.__PATCH=patchGaps(wt);
+    })();
+    P.vy=0; P.grounded=true;
+   }catch(e){
+     if(window.__beacon) window.__beacon('map', e&&e.message);
+     if(window.console) console.error('map setup failed:', e);
+   }
+    done();
+  }, undefined, function(){ done(); });
+} else {
+  buildMap();
+}
+
+// Set dressing is added after load rather than at build time, so the room
+// still exists (and still plays) if a model is missing.
+var STAGEOBJ=null, SEATS=[];
+// Every model so far has arrived with its geometry somewhere other than its
+// origin and a scale that means nothing. Measuring the geometry with world
+// matrices applied -- at scale 1, before anything else -- is the only method
+// that has worked on all of them, so every prop goes through this.
+function place(name, x, z, opts){
+  opts = opts || {};
+  var src = PROPS[name];
+  if(!src) return null;
+  var g = src.clone(true);
+  g.scale.setScalar(1); g.position.set(0,0,0); g.rotation.set(0,0,0);
+  g.updateMatrixWorld(true);
+  var bb = new THREE.Box3(), any = false;
+  g.traverse(function(o){
+    if(o.isMesh||o.isSkinnedMesh){
+      o.geometry.computeBoundingBox();
+      if(o.geometry.boundingBox){
+        var b = o.geometry.boundingBox.clone();
+        b.applyMatrix4(o.matrixWorld);
+        bb.union(b); any = true;
+      }
+    }
+  });
+  if(!any) return null;
+  var sz = new THREE.Vector3(), c = new THREE.Vector3();
+  bb.getSize(sz); bb.getCenter(c);
+  var span = opts.byHeight ? sz.y : Math.max(sz.x, sz.y, sz.z);
+  var k = span > 0.0001 ? (opts.size || 1) / span : 1;
+  g.scale.setScalar(k);
+  g.position.set(-c.x * k, -bb.min.y * k, -c.z * k);   // centred, feet on zero
+  var holder = new THREE.Group();
+  holder.add(g);
+  holder.position.set(x, opts.y || 0, z);
+  holder.rotation.y = opts.rotY !== undefined ? opts.rotY : Math.random() * 6.28;
+  if(opts.tilt) holder.rotation.z = opts.tilt;
+  scene.add(holder);
+  if(opts.solid){
+    var r = (opts.size || 1) * 0.42;
+    walls.push({x0:x-r, x1:x+r, z0:z-r, z1:z+r});
+  }
+  return holder;
+}
+function dressTheatre(){
+  // Our stairs, mezzanine, railings, seats and debris all live here, not in
+  // buildMap -- so with a Collada map loaded they were being built on top of
+  // it and the preview looked like our own room. A map preview shows the map.
+  if(DAEMAP) return;
+  if(PROPS.stage&&!STAGEOBJ){
+    var g=PROPS.stage;
+    var bb=new THREE.Box3().setFromObject(g), sz=new THREE.Vector3(), c=new THREE.Vector3();
+    bb.getSize(sz); bb.getCenter(c);
+    // Fit the proscenium opening to the hall, then sit it on the floor.
+    var k=sz.x>0.01 ? 21/sz.x : 1;
+    g.scale.setScalar(k);
+    g.position.set(-c.x*k, -bb.min.y*k, -36 - c.z*k);
+    scene.add(g); STAGEOBJ=g;
+    walls.push({x0:-11,x1:11,z0:-44,z1:-33});
+  }
+  if(PROPS.seat){
+    // This model's geometry sits 64 units from its own origin, so placing it by
+    // position alone puts the seats outside the building. Everything gets
+    // re-centred on its measured box: x/z centred, y resting on the floor.
+    var s0=PROPS.seat;
+    var probe=s0.clone(true); scene.add(probe); probe.updateMatrixWorld(true);
+    var pb=new THREE.Box3().setFromObject(probe), ps=new THREE.Vector3(), pc=new THREE.Vector3();
+    pb.getSize(ps); pb.getCenter(pc);
+    scene.remove(probe);
+    var sk=ps.x>0.01 ? 1.25/ps.x : 1;
+    var off=new THREE.Vector3(-pc.x*sk, -pb.min.y*sk, -pc.z*sk);
+    SEATS=[];
+    for(var r=0;r<5;r++){
+      for(var col=0;col<14;col++){
+        if(col>5&&col<8) continue;            // centre aisle
+        var holder=new THREE.Group();
+        var m=s0.clone(true);
+        m.scale.setScalar(sk);
+        m.position.copy(off);                  // geometry now sits over the holder
+        holder.add(m);
+        holder.position.set(-9+col*1.4, 0, -19-r*2.4);
+        holder.rotation.y=Math.PI;
+        scene.add(holder);
+    MAPMESHES=[];
+    holder.traverse(function(o){ if(o.isMesh) MAPMESHES.push(o); }); SEATS.push(holder);
+      }
+      walls.push({x0:-10,x1:-1.5,z0:-19.5-r*2.4,z1:-18.5-r*2.4});
+      walls.push({x0:1.5,x1:10,z0:-19.5-r*2.4,z1:-18.5-r*2.4});
+    }
+  }
+  // Decay. A clean room with good lighting still reads as a nice theatre;
+  // a broken one reads as Zombies, and debris is the cheapest way to get there.
+  var scatter=[
+    ['rubble',   -8.0, 15.2, 4.2],['rubble',    8.4, 3.0, 3.4],
+    ['rubble',  -13.2,-30.0, 4.6],['bricks',    9.0,14.0, 3.0],
+    ['bricks',   -3.2,-9.5, 2.4],['debrisWood', 5.8,16.0, 3.4],
+    ['debrisWood',-8.8, 2.0, 3.0],['debrisWood',12.8,-21.0,3.6],
+    ['block',    -5.5, 10.4, 1.1],['block',      4.2, 6.0, 1.0],
+    ['block',     2.0,-10.5, 1.0],['block',    -12.0,-25.0,1.1],
+    ['pillar',   -9.2, 6.4, 4.4],['pillar',    14.2,-27.5,4.6],
+    ['table',     7.2, 11.0, 2.6],['table',    -12.3,-19.0,2.6],
+    ['rubble',    6.5,-16.0, 3.2],['bricks',  -10.5,-22.0, 2.8],
+    ['debrisWood',-5.5,4.5, 2.6],['block',     9.5,-12.0, 1.0]
+  ];
+  scatter.forEach(function(r){
+    if(PROPS[r[0]]) place(r[0], r[1], r[2], {size:r[3], solid:r[3]>1.2});
+  });
+  // Cobwebs hang in the ceiling corners.
+  [[-9.4,16.4],[9.4,16.4],[-9.4,0.4],[9.4,0.4],[-15.4,-14.4],[15.4,-14.4]].forEach(function(c){
+    if(PROPS.cobweb) place('cobweb', c[0], c[1], {size:1.9, y:4.6});
+  });
+  // Planks leaning where the boards have come away.
+  [[-6.0,16.8,0.5],[6.4,16.8,-0.4],[-4.2,-12.9,0.3]].forEach(function(q){
+    if(PROPS.plank) place('plank', q[0], q[1], {size:2.2, tilt:q[2], y:0.1});
+  });
+  // The objects that say "Zombies" rather than "theatre".
+  if(PROPS.mysterybox)  place('mysterybox', -5.0, 2.6, {size:1.5, rotY:0.4, solid:true});
+  if(PROPS.powerswitch) place('powerswitch', -4.25, -8.5, {size:0.75, y:1.45, rotY:Math.PI/2});
+  if(PROPS.teleporter)  place('teleporter', 2.6, 6.0, {size:3.2, rotY:0});
+  if(PROPS.perks){
+    place('perks',  -14.6,-18.0,{size:2.1, rotY:Math.PI/2, solid:true});
+    place('perks',   14.6,-18.0,{size:2.1, rotY:-Math.PI/2, solid:true});
+    place('perks',    8.8, 16.4,{size:2.1, rotY:Math.PI, solid:true});
+  }
+
+  // Stairs up to a lobby mezzanine, with the projection box above the
+  // auditorium entrance. Gives the jump somewhere to go and the map a second
+  // storey, which is most of what makes Kino feel like Kino.
+  if(PROPS.stairs!==undefined||PROPS.stairsModel!==undefined){}
+  var MEZZ=4.4;
+  // Kino's spawn room: you stand in the middle, the flight is straight ahead,
+  // windows are to either side and the teleporter pad is underfoot.
+  var STEPS=14, SW=7.0, SZ0=11.6, SZ1=16.2;
+  var stepDepth=(SZ1-SZ0)/STEPS, stepRise=MEZZ/STEPS;
+  for(var i=0;i<STEPS;i++){
+    box(0,(i+1)*stepRise-stepRise, SZ0+i*stepDepth+stepDepth/2, SW, stepRise, stepDepth, M.wood, false);
+  }
+  RAMPS.push({x0:-SW/2,x1:SW/2,z0:SZ0,z1:SZ1,y0:0,y1:MEZZ});
+  box(-SW/2-0.2,0,(SZ0+SZ1)/2,0.4,MEZZ+0.6,SZ1-SZ0,M.wall);
+  box( SW/2+0.2,0,(SZ0+SZ1)/2,0.4,MEZZ+0.6,SZ1-SZ0,M.wall);
+
+  // Landing across the back, then walkways down both sides.
+  PLATFORMS.push({x0:-10.2,x1:10.2,z0:SZ1,z1:17.2,y:MEZZ});
+  PLATFORMS.push({x0: 6.4,x1:10.2,z0: 1.0,z1:17.2,y:MEZZ});
+  PLATFORMS.push({x0:-10.2,x1:-6.4,z0: 1.0,z1:17.2,y:MEZZ});
+  box(0,MEZZ-0.3,(SZ1+17.2)/2,20.4,0.3,17.2-SZ1,M.wood,false);
+  box(8.3,MEZZ-0.3,9.0,3.8,0.3,16.4,M.wood,false);
+  box(-8.3,MEZZ-0.3,9.0,3.8,0.3,16.4,M.wood,false);
+  lamp(0,MEZZ+2.0,16.6,0xFFB878,1.1,14);
+  lamp(8.0,MEZZ+2.0,8.0,0xFFA868,0.9,12);
+  lamp(-8.0,MEZZ+2.0,8.0,0xFFA868,0.9,12);
+  if(PROPS.railing){
+    for(var rx=-9.0;rx<=9.0;rx+=2.6){
+      if(Math.abs(rx)<4.2) continue;                 // leave the stair head open
+      place('railing', rx, SZ1-0.1, {size:2.6, y:MEZZ, rotY:0});
+    }
+    for(var rz=2.0;rz<=15.0;rz+=2.6){
+      place('railing',  6.5, rz, {size:2.6, y:MEZZ, rotY:Math.PI/2});
+      place('railing', -6.5, rz, {size:2.6, y:MEZZ, rotY:Math.PI/2});
+    }
+  }
+
+  // Boarded windows, in the openings rather than on the wall.
+  WINDOWS.forEach(function(w){
+    if(PROPS.plank){
+      for(var b2=0;b2<3;b2++){
+        place('plank', w.x+(w.x<0?0.35:-0.35), w.z, {
+          size:2.5, y:1.15+b2*0.62, rotY:w.rot, tilt:(b2%2?0.08:-0.07)});
+      }
+    }
+    if(PROPS.window) place('window', w.x+(w.x<0?0.3:-0.3), w.z, {size:2.3, y:1.0, rotY:w.rot});
+  });
+
+  if(PROPS.projector){
+    var pj=PROPS.projector;
+    var pb=new THREE.Box3().setFromObject(pj), ps=new THREE.Vector3();
+    pb.getSize(ps);
+    var pk=Math.max(ps.x,ps.z)>0.01 ? 1.5/Math.max(ps.x,ps.z) : 1;
+    var pc2=new THREE.Vector3(); pb.getCenter(pc2);
+    pj.scale.setScalar(pk);
+    var holder2=new THREE.Group();
+    pj.position.set(-pc2.x*pk,-pc2.y*pk,-pc2.z*pk);
+    holder2.add(pj);
+    holder2.position.set(0,4.6,-14.5);
+    holder2.rotation.y=Math.PI;
+    scene.add(holder2);
+    lamp(0,4.9,-15.6,0xBFD8FF,1.1,26);        // the beam down the hall
+  }
+}
+
+/* ---------- dust ---------- */
+var dust;(function(){
+  var g=new THREE.BufferGeometry(),n=320,p=new Float32Array(n*3);
+  for(var i=0;i<n;i++){p[i*3]=(Math.random()-.5)*34;p[i*3+1]=Math.random()*5;p[i*3+2]=(Math.random()-.5)*58-14;}
+  g.setAttribute('position',new THREE.BufferAttribute(p,3));
+  dust=new THREE.Points(g,new THREE.PointsMaterial({color:0xBFAE92,size:.035,transparent:true,opacity:.42}));
+  scene.add(dust);
+})();
+
+/* ---------- viewmodel ---------- */
+var vm=new THREE.Group(), vmParts={};
+(function(){
+  // No placeholder geometry. The old blocks were drawn in a second scene locked
+  // to the view, and with a degenerate scale they smeared across three quarters
+  // of the screen -- which looked exactly like "the game renders nothing".
+  var vmLight=new THREE.PointLight(0xFFE2BE,2.0,2.2,2);
+  vmLight.position.set(.18,.06,-.18);
+  vm.add(vmLight);
+  var flash=new THREE.Mesh(new THREE.ConeGeometry(.05,.16,6),
+    new THREE.MeshBasicMaterial({color:0xFFD479}));
+  flash.rotation.x=-Math.PI/2; flash.position.set(0,.02,-.34);
+  flash.visible=false;                    // visibility, not opacity 0
+  vm.add(flash); vmParts.flash=flash;
+  // Hung off the main camera and drawn in the main pass. The separate
+  // scene/camera version never drew, with the geometry provably in frustum --
+  // this removes that whole pass rather than patching it again.
+  vm.position.set(.19,-.21,-.38);
+  camera.add(vm);
+  scene.add(camera);        // a camera must be in the graph for its children to render
+})();
+// The real gun is the only geometry the viewmodel ever has.
+function useRealGun(kind){
+  kind = kind || P.gun;
+  var spec = GUNPROTOS[kind] || GUNPROTOS[GUNS[kind] && GUNS[kind].model] || GUNPROTOS.pistol;
+  if(!spec) return;
+  if(vmParts.real){
+    if(vmParts.realKind===kind) return;
+    vm.remove(vmParts.real); vmParts.real=null;
+  }
+  var g=spec.root.clone(true);
+  g.traverse(function(o){ if(o.isMesh){ o.frustumCulled=false;
+    if(o.material){ o.material.metalness=.3; o.material.roughness=.55; } } });
+  // Reset the scale BEFORE measuring. The prototype already carries a scale
+  // from the loader, so measuring the clone as-is returns the ALREADY-SCALED
+  // size; dividing by that and assigning (rather than multiplying) replaced a
+  // 0.01 scale with 1.15 and produced a thirty-metre pistol wrapped around the
+  // camera. That is the whole bug, and it had nothing to do with the model.
+  g.scale.setScalar(1);
+  scene.add(g); g.updateMatrixWorld(true);
+  var bb=new THREE.Box3().setFromObject(g), sz=new THREE.Vector3(), c=new THREE.Vector3();
+  bb.getSize(sz); bb.getCenter(c);
+  scene.remove(g);
+  var longest=Math.max(sz.x,sz.y,sz.z);
+  var k=longest>0.0001 ? (spec.vmScale||0.24)/longest : 0.01;
+  g.scale.setScalar(k);
+  g.position.set(-c.x*k,-c.y*k,-c.z*k);
+  var holder=new THREE.Group();
+  holder.add(g);
+  // Barrel runs along +X in this model, so yaw +90 degrees to send it down -Z,
+  // away from the player. -90 points it back at your own face.
+  // Barrel axis differs per model: the 1911 runs along +X, the MP40 along +Z.
+  if(spec.axis==='z') holder.rotation.set(-0.06, Math.PI+0.10, 0.03);
+  else                holder.rotation.set(-0.06, Math.PI/2+0.14, 0.03);
+  // The viewmodel offsets in tick() are tuned for a pistol. A long SMG hung off
+  // the same point sits half out of frame, so each gun carries its own nudge.
+  if(spec.axis==='z') holder.position.set(0.01, 0.02, -0.10);
+  else                holder.position.set(0,0,0);
+  vm.add(holder); vmParts.real=holder; vmParts.realKind=kind;
+  vm.visible=true;
+}
+function setViewModel(kind){
+  var d=kind==='shotgun'?-.46:(kind==='rifle'||kind==='mp40')?-.44:-.34;
+  if(vmParts.flash) vmParts.flash.position.z=d;
+  useRealGun(kind);
+}
+
+/* ---------- audio (procedural, nothing downloaded) ---------- */
+var AC=null;
+function audio(){ if(!AC){try{AC=new (window.AudioContext||window.webkitAudioContext)();}catch(e){}} return AC; }
+function noiseBuf(ctx,dur){
+  var n=ctx.sampleRate*dur,b=ctx.createBuffer(1,n,ctx.sampleRate),d=b.getChannelData(0);
+  for(var i=0;i<n;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/n,2.2);
+  return b;
+}
+function shot(kind){
+  var c=audio();if(!c)return;
+  var s=c.createBufferSource();s.buffer=noiseBuf(c,kind==='shotgun'?.34:.2);
+  var f=c.createBiquadFilter();f.type='lowpass';
+  f.frequency.setValueAtTime(kind==='shotgun'?1700:2600,c.currentTime);
+  f.frequency.exponentialRampToValueAtTime(220,c.currentTime+.18);
+  var g=c.createGain();g.gain.setValueAtTime(kind==='shotgun'?.5:.33,c.currentTime);
+  g.gain.exponentialRampToValueAtTime(.001,c.currentTime+(kind==='shotgun'?.34:.2));
+  s.connect(f);f.connect(g);g.connect(c.destination);s.start();
+}
+// Splintering wood: a noise crack through a band-pass, plus a low thud. A
+// gunshot sample stood in for this and every board sounded like a pistol.
+function woodSnap(pull){
+  var c=audio();if(!c)return;
+  var s=c.createBufferSource();s.buffer=noiseBuf(c,.16);
+  var f=c.createBiquadFilter();f.type='bandpass';
+  f.frequency.setValueAtTime(pull?1500:900,c.currentTime);
+  f.frequency.exponentialRampToValueAtTime(pull?320:260,c.currentTime+.13);
+  f.Q.value=1.6;
+  var g=c.createGain();g.gain.setValueAtTime(.30,c.currentTime);
+  g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.16);
+  s.connect(f);f.connect(g);g.connect(c.destination);s.start();
+  var o=c.createOscillator(),g2=c.createGain();
+  o.type='triangle';o.frequency.setValueAtTime(pull?140:190,c.currentTime);
+  o.frequency.exponentialRampToValueAtTime(60,c.currentTime+.12);
+  g2.gain.setValueAtTime(.16,c.currentTime);
+  g2.gain.exponentialRampToValueAtTime(.001,c.currentTime+.14);
+  o.connect(g2);g2.connect(c.destination);o.start();o.stop(c.currentTime+.15);
+}
+// A footfall: a short filtered thump. Without this you glide -- the camera bob
+// alone reads as floating rather than walking.
+function footstep(){
+  var c=audio();if(!c)return;
+  var s=c.createBufferSource();s.buffer=noiseBuf(c,.09);
+  var f=c.createBiquadFilter();f.type='lowpass';
+  f.frequency.setValueAtTime(760,c.currentTime);
+  f.frequency.exponentialRampToValueAtTime(190,c.currentTime+.08);
+  var g=c.createGain();g.gain.setValueAtTime(.085+Math.random()*.03,c.currentTime);
+  g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.09);
+  s.connect(f);f.connect(g);g.connect(c.destination);s.start();
+}
+function land(){
+  var c=audio();if(!c)return;
+  var s=c.createBufferSource();s.buffer=noiseBuf(c,.16);
+  var f=c.createBiquadFilter();f.type='lowpass';f.frequency.setValueAtTime(420,c.currentTime);
+  var g=c.createGain();g.gain.setValueAtTime(.2,c.currentTime);
+  g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.16);
+  s.connect(f);f.connect(g);g.connect(c.destination);s.start();
+}
+function groan(){
+  var c=audio();if(!c)return;
+  var o=c.createOscillator(),g=c.createGain(),f=c.createBiquadFilter();
+  o.type='sawtooth';o.frequency.setValueAtTime(64+Math.random()*34,c.currentTime);
+  o.frequency.linearRampToValueAtTime(42+Math.random()*20,c.currentTime+.75);
+  f.type='bandpass';f.frequency.value=320;f.Q.value=3.2;
+  g.gain.setValueAtTime(0,c.currentTime);
+  g.gain.linearRampToValueAtTime(.1,c.currentTime+.14);
+  g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.8);
+  o.connect(f);f.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.85);
+}
+function sting(){
+  var c=audio();if(!c)return;
+  [110,146.8,174.6].forEach(function(hz,i){
+    var o=c.createOscillator(),g=c.createGain();
+    o.type='triangle';o.frequency.value=hz;
+    g.gain.setValueAtTime(0,c.currentTime+i*.07);
+    g.gain.linearRampToValueAtTime(.13,c.currentTime+i*.07+.05);
+    g.gain.exponentialRampToValueAtTime(.001,c.currentTime+i*.07+1.4);
+    o.connect(g);g.connect(c.destination);o.start(c.currentTime+i*.07);o.stop(c.currentTime+i*.07+1.5);
+  });
+}
+function thud(){
+  var c=audio();if(!c)return;
+  var o=c.createOscillator(),g=c.createGain();
+  o.type='sine';o.frequency.setValueAtTime(150,c.currentTime);
+  o.frequency.exponentialRampToValueAtTime(48,c.currentTime+.17);
+  g.gain.setValueAtTime(.3,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.22);
+  o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+.25);
+}
+
+/* ---------- blood ---------- */
+var puffs=[];
+function puff(pos){
+  var g=new THREE.BufferGeometry(),n=12,p=new Float32Array(n*3),v=[];
+  for(var i=0;i<n;i++){p[i*3]=p[i*3+1]=p[i*3+2]=0;
+    v.push(new THREE.Vector3((Math.random()-.5)*3,(Math.random()-.2)*2.4,(Math.random()-.5)*3));}
+  g.setAttribute('position',new THREE.BufferAttribute(p,3));
+  var pt=new THREE.Points(g,new THREE.PointsMaterial({color:0x8E1008,size:.14,transparent:true,opacity:.95}));
+  pt.position.copy(pos);scene.add(pt);puffs.push({pt:pt,v:v,t:0});
+}
+
+/* ---------- guns / player ---------- */
+var GUNS={
+  pistol :{name:'M1911',  dmg:42,mag:8, res:56, rpm:430,auto:false,spread:.010,pellets:1,reload:1.5,kick:.055},
+  rifle  :{name:'Carbine',dmg:36,mag:30,res:180,rpm:740,auto:true, spread:.020,pellets:1,reload:2.1,kick:.028},
+  shotgun:{name:'Trench', dmg:28,mag:6, res:48, rpm:95, auto:false,spread:.080,pellets:8,reload:2.6,kick:.11},
+  // Wall buy. Fast and loose: it is the crowd-control gun, not the accurate one.
+  mp40   :{name:'MP40',    dmg:34,mag:32,res:192,rpm:550,auto:true, spread:.030,pellets:1,reload:2.0,kick:.034,model:'mp40'}
+};
+// Eye height, not total height: a camera sits below the top of the head. At
+// 1.68 the player could not get under 12.8% of the map's indoor ceilings --
+// including the one over Quick Revive, which you walk under in the real game.
+var EYE=1.55, GRAV=-24, JUMPV=7.2;
+// The world was one flat floor. Kino is vertical -- stairs, a balcony, a
+// projection box -- so the ground is now a height query rather than zero.
+// PLATFORMS / RAMPS are declared above, before buildMap uses them.
+function groundAt(x,z){
+  var h=0, i, p;
+  for(i=0;i<PLATFORMS.length;i++){
+    p=PLATFORMS[i];
+    if(x>p.x0&&x<p.x1&&z>p.z0&&z<p.z1&&p.y>h) h=p.y;
+  }
+  for(i=0;i<RAMPS.length;i++){
+    var r=RAMPS[i];
+    if(x>r.x0&&x<r.x1&&z>r.z0&&z<r.z1){
+      var t=(z-r.z0)/(r.z1-r.z0);
+      var y=r.y0+(r.y1-r.y0)*Math.max(0,Math.min(1,t));
+      if(y>h) h=y;
+    }
+  }
+  return h;
+}
+var P={vy:0,grounded:true,pos:new THREE.Vector3(0,1.68,8.0),yaw:Math.PI,pitch:0,hp:100,pts:500,kills:0,
+  gun:'pistol',ammo:8,reserve:56,reloading:0,cool:0,aiming:false,knifeCool:0,regen:0,dead:false,
+  bob:0,recoil:0};
+var RADIUS=.44;
+function collide(x,z){
+  if(DAEMAP){
+    // checked against the mesh in the movement step, not here
+    return false;
+  }for(var i=0;i<walls.length;i++){var w=walls[i];
+  if(x>w.x0-RADIUS&&x<w.x1+RADIUS&&z>w.z0-RADIUS&&z<w.z1+RADIUS)return true;}return false;}
+
+/* ---------- zombies ---------- */
+var zombies=[],alive=0,round=0,toSpawn=0,spawnT=0,between=1.4;
+var _navOut={x:0,z:0}, stallT=0, _useBtn, _useLive=false, _useBroke=false;
+var SPAWNS=[{x:-8,z:15,a:0},{x:8,z:15,a:0},{x:0,z:16,a:0},
+            {x:-3.5,z:-11,a:1},{x:3.5,z:-11,a:1},
+            {x:-14,z:-32,a:2},{x:14,z:-32,a:2},{x:0,z:-41,a:2},{x:-14,z:-18,a:2},{x:14,z:-18,a:2}];
+function makeZombie(hp,speed,x,z){
+  var g, mixer=null, actions={};
+  if(ZPROTO){
+    g=THREE.SkeletonUtils.clone(ZPROTO);
+    mixer=new THREE.AnimationMixer(g);
+    ['walk','attack','die'].forEach(function(n){
+      if(CLIPS[n]) actions[n]=mixer.clipAction(CLIPS[n]);
+    });
+    if(actions.die){ actions.die.loop=THREE.LoopOnce; actions.die.clampWhenFinished=true; }
+    if(actions.walk){ actions.walk.timeScale=0.8+Math.random()*0.5; actions.walk.play(); }
+  } else {
+    g=new THREE.Group();
+    var t=new THREE.Mesh(new THREE.CylinderGeometry(.26,.21,1.6,8),M.rags);
+    t.position.y=.9; g.add(t);
+  }
+  var sc=.94+Math.random()*.14; g.scale.multiplyScalar(sc);
+  g.position.set(x,0,z); g.userData.isZombie=true; scene.add(g);
+  var hit=new THREE.Mesh(new THREE.CylinderGeometry(.34,.30,1.75,6),
+          new THREE.MeshBasicMaterial({visible:false}));
+  hit.position.y=.88; g.add(hit);
+  var hhit=new THREE.Mesh(new THREE.SphereGeometry(.21,6,5),
+          new THREE.MeshBasicMaterial({visible:false}));
+  hhit.position.y=1.62; g.add(hhit);
+  return {g:g,hp:hp,speed:speed,mixer:mixer,actions:actions,state:'walk',
+          hit:hit,head:hhit,phase:Math.random()*6.3,attack:0,dead:false,
+          groan:1+Math.random()*5,dieT:0,stuckT:0,lastD:999,
+          colT:Math.random()*0.1,blkX:false,blkZ:false,moveT:Math.random(),lastPos:null,rescued:false,
+          bar:null,at:'in',tearT:0,climbT:0};
+}
+function setAnim(z,name){
+  if(!z.mixer||z.state===name||!z.actions[name])return;
+  var from=z.actions[z.state], to=z.actions[name];
+  if(from) from.fadeOut(0.18);
+  to.reset().fadeIn(0.18).play();
+  z.state=name;
+}
+function reachable(s){
+  // Defensive about doors existing at all: with a Collada map loaded buildMap
+  // never runs, so `doors` is empty and reading doors[0].open threw on every
+  // spawn attempt -- which killed the rest of the tick each frame and looked
+  // exactly like the game freezing on round 1 while still rendering at 120fps.
+  if(s.a===0) return true;
+  if(!doors.length) return true;
+  if(s.a===1) return !!(doors[0]&&doors[0].open);
+  return !!(doors[0]&&doors[0].open&&doors[1]&&doors[1].open);
+}
+function startRound(){round++;toSpawn=Math.min(5+round*3,32);spawnT=0;stallT=0;
+  el('h-round').textContent=round;toast('Round '+round);sting();}
+function spawnOne(){
+  // Out of the dark beyond a window, not out of thin air in the middle of the
+  // room. They have to take the boards off before they are in the game at all.
+  if(BARRIERS.length){
+    var b=BARRIERS[Math.random()*BARRIERS.length|0];
+    var zb=makeZombie(58+round*24,Math.min(.95+round*.09,3.1),
+                      b.outX+(Math.random()-.5)*0.7, b.outZ+(Math.random()-.5)*0.7);
+    zb.g.position.y=b.standY;
+    zb.bar=b; zb.at='outside'; zb.tearT=0.6+Math.random()*0.8;
+    zombies.push(zb); alive++; return;
+  }
+  var pool=(MAPSPAWNPTS||SPAWNS).filter(reachable);
+  if(!pool.length)pool=[(MAPSPAWNPTS||SPAWNS)[0]];
+  var s=pool[Math.random()*pool.length|0];
+  var zx=s.x+(Math.random()-.5)*1.4, zz=s.z+(Math.random()-.5)*1.4;
+  var z=makeZombie(58+round*24,Math.min(.95+round*.09,3.1),zx,zz);
+  // makeZombie puts them at y=0, which on an imported map is six metres under
+  // the floor -- they walked around in the basement and still clawed at you,
+  // because the attack test only ever measured horizontal distance.
+  if(DAEMAP){ var fy=mapGroundAt(zx,zz,(s.y!==undefined?s.y:P.pos.y)+2.5); z.g.position.y=(fy===null?P.pos.y-EYE:fy); }
+  zombies.push(z);
+  alive++;
+}
+
+/* ---------- combat ---------- */
+var ray=new THREE.Raycaster(),muzzle=new THREE.PointLight(0xFFD9A0,0,11,2);scene.add(muzzle);
+function fire(){
+  var g=GUNS[P.gun];
+  if(P.reloading>0||P.cool>0||P.dead)return;
+  if(P.ammo<=0){reload();return;}
+  P.ammo--;P.cool=60/g.rpm;P.recoil=g.kick;
+  muzzle.position.copy(P.pos);muzzle.intensity=3.0;
+  vmParts.flash.visible=true;flashT=.045;shot(P.gun);
+  var meshes=[];
+  zombies.forEach(function(z){ if(z.dead)return;
+    z.hit.userData.z=z; z.head.userData.z=z; meshes.push(z.hit,z.head); });
+  for(var p=0;p<g.pellets;p++){
+    var dir=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
+    var sp=g.spread*(P.aiming?.4:1);
+    dir.x+=(Math.random()-.5)*sp;dir.y+=(Math.random()-.5)*sp;dir.normalize();
+    ray.set(P.pos,dir);
+    var hits=ray.intersectObjects(meshes,false);
+    if(hits.length){
+      var z=hits[0].object.userData.z;
+      var head=hits[0].object===z.head;
+      hurtZombie(z,g.dmg*(head?2.5:1),head,hits[0].point);
+    }
+  }
+  hud();
+}
+function hurtZombie(z,amt,head,at){
+  if(z.dead)return;
+  if(at)puff(at);
+  z.hp-=amt;
+  if(z.hp<=0){
+    z.dead=true; alive--; P.kills++; P.pts+=head?100:60; thud();
+    z.dieT=1.6;
+    if(z.actions&&z.actions.die){
+      if(z.actions[z.state]) z.actions[z.state].fadeOut(0.1);
+      z.actions.die.reset().fadeIn(0.1).play(); z.state='die';
+    } else { scene.remove(z.g); }
+  }
+  else P.pts+=10;
+  hud();
+}
+function reload(){var g=GUNS[P.gun];
+  if(P.reloading>0||P.ammo>=g.mag||P.reserve<=0)return;P.reloading=g.reload;}
+function knife(){
+  if(P.knifeCool>0||P.dead)return;P.knifeCool=.6;
+  var fwd=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
+  zombies.forEach(function(z){if(z.dead)return;
+    var d=z.g.position.clone().sub(P.pos);d.y=0;
+    if(d.length()<2.4&&d.normalize().dot(fwd)>.5)hurtZombie(z,170,false,z.g.position.clone().setY(1.2));});
+}
+
+/* ---------- buy ---------- */
+var nearBuy=null;
+function checkNear(){
+  var best=null,bd=3.0;
+  for(var wi=0;wi<WALLBUYS.length;wi++){
+    var wb=WALLBUYS[wi];
+    var q3=Math.hypot(P.pos.x-wb.x, P.pos.z-wb.z);
+    if(q3<bd && Math.abs(P.pos.y-P.eye-wb.fy)<1.6){
+      bd=q3;
+      best = (P.gun===wb.key)
+        ? {kind:'ammo', o:wb, label:wb.name+' ammo', cost:Math.round(wb.cost/2)}
+        : {kind:'buy',  o:wb, label:wb.name,        cost:wb.cost};
+    }
+  }
+  // A barrier missing boards is the nearest thing worth using.
+  for(var bi=0;bi<BARRIERS.length;bi++){
+    var bb2=BARRIERS[bi];
+    if(barrierBoardsLeft(bb2)>=bb2.planks.length) continue;
+    var q2=Math.hypot(P.pos.x-bb2.inX, P.pos.z-bb2.inZ);
+    if(q2<bd && Math.abs(P.pos.y-P.eye-bb2.floorY)<1.6){
+      bd=q2;
+      best={kind:'barrier',o:bb2,cost:0,
+            label:'Rebuild barrier  '+barrierBoardsLeft(bb2)+'/'+bb2.planks.length};
+    }
+  }
+  doors.forEach(function(d){if(d.open)return;
+    var q=Math.hypot(P.pos.x-d.x,P.pos.z-d.z);if(q<bd){bd=q;best={kind:'door',o:d,label:d.label,cost:d.cost};}});
+  buys.forEach(function(b){
+    var q=Math.hypot(P.pos.x-b.x,P.pos.z-b.z);if(q<bd){bd=q;best={kind:'buy',o:b,label:b.name,cost:b.cost};}});
+  nearBuy=best;var e=el('h-buy');
+  if(best){ e.textContent = best.cost
+      ? best.label+' \u2014 '+best.cost+(TOUCH?'   TAP USE':'   [E]')
+      : best.label+' \u2014 +10 each'+(TOUCH?'   TAP USE':'   HOLD [E]');
+    e.className='buy on'; }
+  else e.className='buy';
+}
+function use(){
+  if(!nearBuy||P.dead)return;
+  if(nearBuy.kind==='barrier'){
+    var bb3=nearBuy.o;
+    autoRebuild=bb3;                           // keep going without more input
+    if(bb3.rebuildT>0) return;                 // one board at a time
+    nailOne(bb3);
+    return;
+  }
+  if(P.pts<nearBuy.cost){toast('Not enough points');return;}
+  if(nearBuy.kind==='ammo'){
+    var ag=GUNS[nearBuy.o.key];
+    if(P.reserve>=ag.res){ toast('Ammo full'); return; }
+    P.pts-=nearBuy.cost; P.reserve=ag.res; toast('Ammo'); hud(); checkNear(); return;
+  }
+  P.pts-=nearBuy.cost;
+  if(nearBuy.kind==='door'){var d=nearBuy.o;d.open=true;scene.remove(d.grp);
+    var i=walls.indexOf(d.wall);if(i>=0)walls.splice(i,1);toast('Opened');}
+  else{var b=nearBuy.o,g=GUNS[b.key];P.gun=b.key;P.ammo=g.mag;P.reserve=g.res;P.reloading=0;
+    setViewModel(b.key);toast(g.name);}
+  hud();checkNear();
+}
+
+/* ---------- hud ---------- */
+var toastT=0;
+function toast(t){var e=el('h-toast');e.textContent=t;e.className='toast on';toastT=1.7;}
+function hud(){el('h-pts').textContent=P.pts;el('h-ammo').textContent=P.ammo;
+  el('h-mag').textContent='/ '+P.reserve;el('h-gun').textContent=GUNS[P.gun].name;}
+
+/* ---------- input ---------- */
+var keys={},firing=false;
+document.addEventListener('keydown',function(e){keys[e.code]=true;
+  if(e.code==='Escape'){ setPaused(!paused); return; }
+  if(paused) return;
+  if(e.code==='KeyR')reload();if(e.code==='KeyE')use();if(e.code==='KeyV')knife();
+  if(e.code==='Space'&&P.grounded){P.vy=JUMPV;P.grounded=false;}
+  if(['ArrowUp','ArrowDown','Space'].indexOf(e.code)>=0)e.preventDefault();});
+document.addEventListener('keyup',function(e){keys[e.code]=false;});
+renderer.domElement.addEventListener('mousedown',function(e){
+  if(!running)return;
+  if(document.pointerLockElement!==renderer.domElement){renderer.domElement.requestPointerLock();return;}
+  if(e.button===0){firing=true;fire();}if(e.button===2)P.aiming=true;});
+document.addEventListener('mouseup',function(e){if(e.button===0)firing=false;if(e.button===2)P.aiming=false;});
+document.addEventListener('contextmenu',function(e){if(running)e.preventDefault();});
+document.addEventListener('mousemove',function(e){
+  if(document.pointerLockElement!==renderer.domElement)return;
+  var s=.0022*LOOKSENS;
+  P.yaw-=e.movementX*s;P.pitch=Math.max(-1.42,Math.min(1.42,P.pitch-e.movementY*s));});
+
+// Touch input is Kino der Toten's (MIT, Luckey Faraday) rather than the stick
+// and buttons written here earlier: it handles multi-finger ownership, pointer
+// capture, look sensitivity and a settings panel, all of which the hand-rolled
+// version got wrong in ways that only show up on a real phone.
+var TC=createZombieTouch({
+  onLook:function(dx,dy,sens){
+    P.yaw-=dx*0.0042*(sens||1);
+    P.pitch=Math.max(-1.42,Math.min(1.42,P.pitch-dy*0.0042*(sens||1)));
+  },
+  onAction:function(kind){
+    if(kind==='reload')reload();
+    else if(kind==='melee')knife();
+    else if(kind==='use')use();
+  },
+  onPause:function(){ setPaused(!paused); },
+  onReset:function(){ }
+});
+var TOUCHSTATE={forward:0,strafe:0,fire:false,firePressed:false,aim:false,use:false};
+
+/* ---------- look sensitivity ----------
+   One number for both input methods, so the slider on the pause screen means
+   the same thing whether you are dragging a thumb or pushing a mouse. It
+   shares the touch layer's own storage key, which is what that layer reads
+   when it is constructed, so a saved value survives a reload either way. */
+var LOOKSENS=1;
+try{ var _ls=Number(localStorage.getItem('zombies.touchSensitivity'));
+     if(_ls>0) LOOKSENS=Math.max(0.4,Math.min(2,_ls)); }catch(e){}
+function setLookSens(v,fromPause){
+  v=Math.max(0.4,Math.min(2,Number(v)||1));
+  LOOKSENS=v;
+  if(TC&&TC.setSensitivity) TC.setSensitivity(v);
+  else { try{ localStorage.setItem('zombies.touchSensitivity',String(v)); }catch(e){} }
+  var ms=document.getElementById('touch-sensitivity'),
+      mv=document.getElementById('touch-sensitivity-value'),
+      ps=el('p-sens'), pv=el('p-sens-val');
+  if(ms&&ms.value!=v) ms.value=v;
+  if(mv) mv.textContent=v.toFixed(1)+'\u00d7';
+  if(ps&&!fromPause) ps.value=v;
+  if(pv) pv.textContent=v.toFixed(1)+'\u00d7';
+}
+
+/* ---------- loop ---------- */
+var running=false,prev=0,GOD=false,flashT=0;
+// Set while __step() is driving the loop by hand. The browser SUSPENDS
+// requestAnimationFrame outright when the window is hidden, so without this
+// there is no way to watch a round play out from a script.
+var MANUAL=false, paused=false;
+function setPaused(on){
+  if(!running || P.dead){ return; }
+  if(on===paused) return;
+  paused=on;
+  el('s-pause').hidden=!on;
+  el('p-stat').textContent='Round '+round+'  \u00b7  '+P.pts+' points';
+  if(on){ if(document.pointerLockElement) document.exitPointerLock(); }
+  else { prev=performance.now(); grabMouse(); }
+  if(TC) TC.setEnabled(!on&&running,!on&&running);
+}
+// Chrome refuses a pointer lock for about a second after Escape released the
+// last one -- which is exactly when Resume gets clicked. The request is
+// rejected, the game unpauses, and the mouse steers nothing, which reads as
+// "Resume did not work". Say what to do instead; the canvas mousedown handler
+// takes the lock on the next click.
+function grabMouse(){
+  if(TOUCH||!running||document.pointerLockElement) return;
+  var p=null;
+  try{ p=renderer.domElement.requestPointerLock(); }catch(e){}
+  function miss(){ if(running&&!paused&&!document.pointerLockElement) toast('Click to look'); }
+  if(p&&p.then) p.then(null,miss);
+  else setTimeout(miss,350);
+}
+// Escape is also what releases the pointer lock, so the lock itself is the
+// signal: lose it mid-round and the game stops with the menu up, rather than
+// carrying on invisibly while the mouse does something else.
+document.addEventListener('pointerlockchange',function(){
+  if(!document.pointerLockElement && running && !P.dead && !TOUCH) setPaused(true);
+});
+function tick(now){
+  if(!MANUAL) requestAnimationFrame(tick);
+  var dt=Math.min((now-prev)/1000,.05);prev=now;
+  if(!running || paused){renderer.render(scene,camera);return;}
+
+  nearT-=dt; if(nearT<=0){ nearT=0.14; checkNear(); }
+  // Pulse the barrier the prompt is talking about, fade the rest out.
+  if(BARRIERS.length){
+    var lit = (nearBuy && nearBuy.kind==='barrier') ? nearBuy.o : null;
+    glowT+=dt;
+    for(var gi=0;gi<BARRIERS.length;gi++){
+      var gb=BARRIERS[gi]; if(!gb.glow) continue;
+      var want = (gb===lit) ? 0.30+Math.sin(glowT*4.2)*0.16 : 0;
+      gb.glow.material.opacity += (want-gb.glow.material.opacity)*Math.min(1,dt*9);
+      gb.glow.visible = gb.glow.material.opacity>0.004;
+    }
+  }
+  // Light the USE button whenever anything is in reach, dimmer when the points
+  // are not there yet.
+  if(_useBtn===undefined) _useBtn=document.querySelector('#touch-controls [data-touch="use"]')||null;
+  if(_useBtn){
+    var live = !!nearBuy;
+    var broke = live && nearBuy.cost>0 && P.pts<nearBuy.cost;
+    if(live!==_useLive || broke!==_useBroke){
+      _useBtn.classList.toggle('live', live);
+      _useBtn.classList.toggle('broke', broke);
+      _useLive=live; _useBroke=broke;
+    }
+  }
+  if(WALLBUYS.length){
+    var litW = (nearBuy && (nearBuy.kind==='buy'||nearBuy.kind==='ammo')) ? nearBuy.o : null;
+    for(var wj=0;wj<WALLBUYS.length;wj++){
+      var wb2=WALLBUYS[wj]; if(!wb2.glow) continue;
+      var w2 = (wb2===litW) ? 0.95+Math.sin(glowT*4.2)*0.05 : 0.60;
+      wb2.glow.material.opacity += (w2-wb2.glow.material.opacity)*Math.min(1,dt*9);
+    }
+  }
+  if(P.cool>0)P.cool-=dt; if(P.knifeCool>0)P.knifeCool-=dt;
+  for(var bq=0;bq<BARRIERS.length;bq++) if(BARRIERS[bq].rebuildT>0) BARRIERS[bq].rebuildT-=dt;
+  // Hold the use key rather than tapping it once per board.
+  // Hold E on a keyboard. On a phone there is nothing to hold -- TOUCHSTATE.use
+  // is never set by the control pad, so a tap only ever nailed ONE board and a
+  // six board window took six taps with a cooldown between each. One tap now
+  // keeps nailing until the window is full or you walk away.
+  if(keys.KeyE && nearBuy && nearBuy.kind==='barrier') use();
+  if(autoRebuild){
+    if(P.dead || !nearBuy || nearBuy.kind!=='barrier' || nearBuy.o!==autoRebuild
+       || barrierBoardsLeft(autoRebuild)>=autoRebuild.planks.length){
+      autoRebuild=null;
+    } else if(autoRebuild.rebuildT<=0){
+      nailOne(autoRebuild);
+    }
+  }
+  if(muzzle.intensity>0)muzzle.intensity=Math.max(0,muzzle.intensity-dt*26);
+  if(flashT>0){ flashT-=dt; if(flashT<=0) vmParts.flash.visible=false; }
+  if(toastT>0){toastT-=dt;if(toastT<=0)el('h-toast').className='toast';}
+  if(P.reloading>0){P.reloading-=dt;
+    if(P.reloading<=0){var g=GUNS[P.gun],need=g.mag-P.ammo,take=Math.min(need,P.reserve);
+      P.ammo+=take;P.reserve-=take;hud();}}
+  if(DAEMAP){ navT-=dt; if(navT<=0){ navT=0.35; buildNav(); } }
+  P.regen+=dt;
+  if(P.regen>3.2&&P.hp<100){P.hp=Math.min(100,P.hp+dt*36);if(P.hp>60)el('hurt').className='hurt';}
+
+  camera.quaternion.setFromEuler(new THREE.Euler(P.pitch+P.recoil,P.yaw,0,'YXZ'));
+  if(P.recoil>0)P.recoil=Math.max(0,P.recoil-dt*.42);
+  camera.fov+=((P.aiming?48:74)-camera.fov)*Math.min(1,dt*13);camera.updateProjectionMatrix();
+
+  var f=0,s=0;
+  if(keys.KeyW||keys.ArrowUp)f+=1; if(keys.KeyS||keys.ArrowDown)f-=1;
+  if(keys.KeyA||keys.ArrowLeft)s-=1; if(keys.KeyD||keys.ArrowRight)s+=1;
+  if(TC&&TC.mode){ f+=TOUCHSTATE.forward||0; s+=TOUCHSTATE.strafe||0; }
+  var L=Math.hypot(f,s);if(L>1){f/=L;s/=L;}
+  var spd=(P.aiming?2.9:5.1)*dt,sn=Math.sin(P.yaw),cs=Math.cos(P.yaw);
+  var dx=(-sn*f+cs*s)*spd,dz=(-cs*f-sn*s)*spd;
+  if(DAEMAP){
+    // chest height, so skirting and debris do not stop you dead
+    var ch=P.pos.y-0.7;
+    if(!mapBlocked(P.pos.x,ch,P.pos.z,dx,0)) P.pos.x+=dx;
+    if(!mapBlocked(P.pos.x,ch,P.pos.z,0,dz)) P.pos.z+=dz;
+  } else {
+    if(!collide(P.pos.x+dx,P.pos.z))P.pos.x+=dx;
+    if(!collide(P.pos.x,P.pos.z+dz))P.pos.z+=dz;
+  }
+  var bobWas=P.bob;
+  P.bob+=(L>.1&&P.grounded)?dt*(P.aiming?6.4:9.4):0;
+  // One footfall per half cycle, on the low point of the bob.
+  if(Math.floor(bobWas/Math.PI)!==Math.floor(P.bob/Math.PI)) footstep();
+
+  // Jump. Gravity integrates against a flat floor -- there is no height map, so
+  // "grounded" is simply being back at eye level.
+  if((keys.Space||TOUCHSTATE.jump)&&P.grounded){ P.vy=JUMPV; P.grounded=false; }
+  var gy;
+  if(DAEMAP){
+    // From just above the feet, not above the head: starting high finds the
+    // ceiling over you and leaves you standing in mid-air under it.
+    var mg=mapGroundAt(P.pos.x,P.pos.z,P.pos.y-EYE+0.6);
+    gy = (mg===null) ? P.pos.y : mg+EYE;    // no floor under you: hold height
+  } else {
+    gy = groundAt(P.pos.x,P.pos.z)+EYE;
+  }
+  if(P.grounded){
+    // Climb at a fixed rate with NO upper limit on the gap. The previous guard
+    // only acted when the height change was under 0.9, so any larger rise fell
+    // through both branches and the player simply stopped climbing -- stranded
+    // half way up the stairs with the floor still rising ahead of them.
+    var dy=gy-P.pos.y;
+    if(dy>0.001){ P.pos.y+=Math.min(dy, 9*dt); }
+    else if(dy<-0.35){ P.grounded=false; }   // walked off an edge
+    else { P.pos.y=gy; }
+  }
+  if(!P.grounded){
+    P.vy+=GRAV*dt;
+    P.pos.y+=P.vy*dt;
+    if(P.pos.y<=gy){ var hard=P.vy<-5.5; P.pos.y=gy; P.vy=0; P.grounded=true;
+      if(hard){ land(); P.landT=0.16; } }
+  }
+  camera.position.copy(P.pos);
+  // Deeper bob, and a sideways sway: the old 3.5cm vertical nudge was too small
+  // to read as footsteps at all.
+  if(P.landT>0) P.landT-=dt;
+  // Crouch under a low ceiling instead of clipping the camera through it. This
+  // has to be folded into the final y, not applied before it -- the bob line
+  // assigns y outright and was throwing the duck away.
+  var wantEye=EYE;
+  if(DAEMAP){
+    var ch2=mapCeilAt(P.pos.x,P.pos.z,P.pos.y-P.eye);
+    if(ch2<EYE+0.25) wantEye=Math.max(0.85, ch2-0.25);
+  }
+  P.eye += (wantEye-P.eye)*Math.min(1,dt*9);
+  var bobY=P.grounded?Math.sin(P.bob)*.058:0;
+  var dip=P.landT>0?-Math.sin(P.landT/0.16*Math.PI)*0.09:0;
+  camera.position.y=P.pos.y+bobY+dip-(EYE-P.eye);
+  if(P.grounded){
+    var sway=Math.cos(P.bob*0.5)*.028;
+    camera.position.x+=Math.cos(P.yaw)*sway;
+    camera.position.z+=-Math.sin(P.yaw)*sway;
+  }
+
+  // Reload: drop the gun out of frame, roll it over, bring it back. Without
+  // this the only feedback for a 1.5s reload is the ammo counter changing.
+  var rl=0, rroll=0;
+  if(P.reloading>0){
+    var g0=GUNS[P.gun], t=1-(P.reloading/g0.reload);     // 0..1 through the reload
+    var curve=Math.sin(Math.PI*t);                        // out and back
+    rl=curve*0.22; rroll=curve*1.15;
+  }
+  vm.position.x=.19+Math.sin(P.bob)*.010-(P.aiming?.19:0);
+  vm.position.y=-.21+Math.abs(Math.cos(P.bob))*.008+(P.aiming?.065:0)-rl;
+  vm.position.z=-.38+(P.aiming?.05:0)+P.recoil*1.4;
+  vm.rotation.z=rroll*0.55;
+  vm.rotation.x=P.recoil*1.6-rroll*0.5;
+  vm.rotation.x=P.recoil*2.2;
+
+
+  // touch state is read once per frame; read() clears its one-shot flags
+  if(TC&&TC.mode){
+    TC.setEnabled(running,running);
+    TOUCHSTATE=TC.input.read();
+    if(TOUCHSTATE.firePressed) fire();
+    P.aiming=P.aiming||TOUCHSTATE.aim;
+    if(TOUCHSTATE.fire&&GUNS[P.gun].auto) fire();
+  }
+  if(firing&&GUNS[P.gun].auto)fire();
+
+  // A throw in here used to take the rest of the frame with it, which is why a
+  // single bad spawn looked like the whole game freezing.
+  try{
+    if(toSpawn>0){ spawnT-=dt;
+      if(spawnT<=0&&alive<(TOUCH?10:16)){ spawnOne(); toSpawn--; spawnT=Math.max(.3,1.4-round*.05); } }
+    else if(alive<=0){ between-=dt; if(between<=0){ startRound(); between=7; } }
+    else if(toSpawn<=0){
+      // Nothing left to spawn and the count is not falling: if the stragglers
+      // cannot be reached at all, the round would hang. Give them 45 seconds.
+      stallT+=dt;
+      if(stallT>45){
+        for(var sv=zombies.length-1;sv>=0;sv--){ if(!zombies[sv].dead){
+          scene.remove(zombies[sv].g); zombies.splice(sv,1); alive--; } }
+        stallT=0;
+      }
+    }
+  }catch(e){
+    if(window.__beacon) window.__beacon('spawn', e&&e.message);
+    toSpawn=0;
+  }
+
+  for(var i=zombies.length-1;i>=0;i--){
+    var z=zombies[i];
+    if(z.mixer) z.mixer.update(dt);
+    if(z.dead){
+      // Let the death animation finish before the body is removed.
+      z.dieT-=dt;
+      if(z.dieT<=0){ scene.remove(z.g); zombies.splice(i,1); }
+      continue;
+    }
+    z.groan-=dt;
+    if(z.groan<=0){ z.groan=4+Math.random()*7;
+      if(z.g.position.distanceTo(P.pos)<17) groan(); }
+
+    // At the window: pull the boards off, then climb in. Until that is done the
+    // zombie is outside and cannot touch you -- and you can shoot it through
+    // the gaps, which is the whole point of the barrier.
+    if(z.bar && z.at!=='in'){
+      var bw=z.bar;
+      z.g.rotation.y=Math.atan2(bw.nx, bw.nz);
+      if(z.at==='outside'){
+        if(barrierBoardsLeft(bw)>0){
+          setAnim(z,'attack');
+          z.tearT-=dt;
+          if(z.tearT<=0){
+            // They get quicker as the rounds go on.
+            z.tearT=Math.max(0.7, 2.4-round*0.11);
+            if(!tearBoard(bw)) z.at='climbing';
+          }
+        } else { z.at='climbing'; z.climbT=0; }
+        if(z.at!=='climbing') continue;
+      }
+      if(z.at==='climbing'){
+        setAnim(z,'walk');
+        z.climbT+=dt;
+        var k=Math.min(1,z.climbT/1.1);
+        // Each one lands a little to its own side of the sill, so a pair coming
+        // through the same window does not arrive on the same spot.
+        var lat=(z.phase%1-0.5)*0.9;
+        z.g.position.x = bw.outX + (bw.inX-bw.outX)*k + bw.nz*lat;
+        z.g.position.z = bw.outZ + (bw.inZ-bw.outZ)*k - bw.nx*lat;
+        // over the sill and down onto the floor
+        z.g.position.y = bw.standY + Math.sin(k*Math.PI)*0.35 + (bw.floorY-bw.standY)*k;
+        if(k>=1){ z.at='in'; z.bar=null; z.gy=bw.floorY; }
+        continue;
+      }
+    }
+    var to=new THREE.Vector3(P.pos.x-z.g.position.x,0,P.pos.z-z.g.position.z);
+    var dist=to.length();
+    // Follow the distance field until you are nearly on top of the player, then
+    // go straight at them.
+    if(DAEMAP && dist>2.2 && navStep(z.g.position.x, z.g.position.z, _navOut)){
+      to.set(_navOut.x, 0, _navOut.z).multiplyScalar(dist);
+    }
+    // navStep only ever returns one of eight compass directions and the field
+    // is rebuilt three times a second, so the raw heading jumps 45 degrees at a
+    // time -- which is the stutter. Ease the heading, and turn the model towards
+    // the eased one by the shortest arc rather than snapping to it.
+    var wx=to.x/(dist||1), wz=to.z/(dist||1);
+    if(z.hx===undefined){ z.hx=wx; z.hz=wz; }
+    var ease=Math.min(1, dt*7);
+    z.hx+=(wx-z.hx)*ease; z.hz+=(wz-z.hz)*ease;
+    var hl=Math.hypot(z.hx,z.hz) || 1;
+    z.hx/=hl; z.hz/=hl;
+    to.set(z.hx*dist, 0, z.hz*dist);
+    // Stuck means NOT MOVING, not "failed to get closer". The old test compared
+    // against an all-time minimum distance, so every time the player backed away
+    // -- which is most of a round -- healthy zombies stopped beating their own
+    // record and were teleported across the map after twelve seconds. That is
+    // why they appeared to vanish before you shot them.
+    if(DAEMAP){
+      z.moveT=(z.moveT||0)+dt;
+      if(z.moveT>=1){
+        var moved = z.lastPos ? z.g.position.distanceTo(z.lastPos) : 99;
+        if(!z.lastPos) z.lastPos=z.g.position.clone(); else z.lastPos.copy(z.g.position);
+        z.moveT=0;
+        // Being next to the player is not being stuck -- that is attacking.
+        if(moved<0.35 && dist>3) z.stuckT+=1; else z.stuckT=0;
+      }
+      if(z.stuckT>=10 && z.stuckT<20 && !z.rescued && BARRIERS.length){
+        // Send it back out of a window so it walks in again. Teleporting one
+        // into the room in front of you is what looked like them popping out of
+        // thin air; coming back through a barrier reads as intentional.
+        var bw2=BARRIERS[Math.random()*BARRIERS.length|0];
+        z.g.position.set(bw2.outX, bw2.standY, bw2.outZ);
+        z.bar=bw2; z.at='outside'; z.tearT=0.4; z.rescued=true;
+        z.stuckT=0; z.lastPos=null;
+      } else if(z.stuckT>=20){
+        // Twice stuck is a zombie that cannot reach you at all. Remove it, or
+        // the round never ends and the game sits there.
+        scene.remove(z.g); zombies.splice(i,1); alive--;
+        continue;
+      }
+    }
+    // Mixamo characters face +Z; the walk clip drives the limbs, so the group
+    // only has to be turned and moved.
+    var want=Math.atan2(z.hx===undefined?to.x:z.hx, z.hz===undefined?to.z:z.hz);
+    var diff=want-z.g.rotation.y;
+    while(diff>Math.PI) diff-=Math.PI*2;
+    while(diff<-Math.PI) diff+=Math.PI*2;
+    z.g.rotation.y += diff*Math.min(1, dt*8);
+    if(dist>1.3){
+      setAnim(z,'walk');
+      to.normalize();
+      var st=z.speed*dt;
+      var nx=z.g.position.x+to.x*st, nz=z.g.position.z+to.z*st;
+      if(DAEMAP){
+        // Ten hertz, staggered across the horde. Collision rays are the most
+        // expensive thing in the frame and a zombie covers three centimetres
+        // between checks, so testing every frame buys nothing and costs
+        // everything. Each keeps the last answer until its turn comes round.
+        z.colT-=dt;
+        if(z.colT<=0){
+          z.colT=0.05;          // 20Hz: at 10 the cached answer showed as a hitch
+          z.blkX=mapBlocked(z.g.position.x,z.g.position.y+1.0,z.g.position.z,to.x*0.45,0);
+          z.blkZ=mapBlocked(z.g.position.x,z.g.position.y+1.0,z.g.position.z,0,to.z*0.45);
+          var fy=mapGroundAt(z.g.position.x,z.g.position.z,z.g.position.y+1.4);
+          if(fy!==null) z.gy=fy;
+        }
+        if(!z.blkX) z.g.position.x=nx;
+        if(!z.blkZ) z.g.position.z=nz;
+        if(z.gy!==undefined) z.g.position.y += Math.max(-9*dt, Math.min(9*dt, z.gy-z.g.position.y));
+      } else {
+        if(!collide(nx,z.g.position.z)) z.g.position.x=nx;
+        if(!collide(z.g.position.x,nz)) z.g.position.z=nz;
+      }
+    } else if(Math.abs((z.g.position.y+EYE)-P.pos.y) < 1.8){
+      setAnim(z,'attack');
+      z.attack-=dt;
+      if(z.attack<=0){ z.attack=1.0; hurt(16); }
+    } else {
+      setAnim(z,'walk');
+    }
+  }
+
+  // Keep them out of each other. Every zombie follows the same distance field,
+  // so without this they converge on the same cell and walk as one body -- two
+  // of them arrive looking like one zombie with four arms. A straight positional
+  // push is steadier here than steering: the nav direction does not have to
+  // fight it, and nobody drifts through a wall because each push is run past
+  // mapBlocked first.
+  var SEP=0.85;
+  for(var a1=0;a1<zombies.length;a1++){
+    var za=zombies[a1]; if(za.dead || za.at==='outside' || za.at==='climbing') continue;
+    for(var b1=a1+1;b1<zombies.length;b1++){
+      var zb2=zombies[b1]; if(zb2.dead || zb2.at==='outside' || zb2.at==='climbing') continue;
+      var ox=za.g.position.x-zb2.g.position.x, oz=za.g.position.z-zb2.g.position.z;
+      var d2=ox*ox+oz*oz;
+      if(d2>SEP*SEP) continue;
+      // Exactly co-located is the case that matters, not the one to skip: two
+      // zombies that climb the same window land on the same point to the
+      // millimetre, and a divide-by-zero guard that `continue`s leaves them
+      // fused there for the rest of the round. Shove them apart on an arbitrary
+      // but stable heading instead.
+      if(d2<1e-6){
+        var ang=(a1*2.399963);                      // golden angle, so pairs differ
+        ox=Math.cos(ang); oz=Math.sin(ang); d2=1;
+      }
+      // Ease apart rather than popping apart: an uncapped push is up to 0.43 in
+      // one frame, and with several pairs overlapping it stacks into a visible
+      // jump. Capped, a fused pair takes a few frames to separate and reads as
+      // them shouldering past each other.
+      var d=Math.sqrt(d2), push=Math.min((SEP-d)*0.5, dt*2.2);
+      var ux=ox/d*push, uz=oz/d*push;
+      if(DAEMAP){
+        if(!mapBlocked(za.g.position.x, za.g.position.y+1.0, za.g.position.z, ux, uz)){
+          za.g.position.x+=ux; za.g.position.z+=uz; }
+        if(!mapBlocked(zb2.g.position.x, zb2.g.position.y+1.0, zb2.g.position.z, -ux, -uz)){
+          zb2.g.position.x-=ux; zb2.g.position.z-=uz; }
+      } else {
+        if(!collide(za.g.position.x+ux, za.g.position.z+uz)){ za.g.position.x+=ux; za.g.position.z+=uz; }
+        if(!collide(zb2.g.position.x-ux, zb2.g.position.z-uz)){ zb2.g.position.x-=ux; zb2.g.position.z-=uz; }
+      }
+    }
+  }
+
+  for(var q=puffs.length-1;q>=0;q--){
+    var pf=puffs[q];pf.t+=dt;
+    var arr=pf.pt.geometry.attributes.position.array;
+    for(var k=0;k<pf.v.length;k++){
+      arr[k*3]+=pf.v[k].x*dt;arr[k*3+1]+=(pf.v[k].y-4.5*pf.t)*dt;arr[k*3+2]+=pf.v[k].z*dt;}
+    pf.pt.geometry.attributes.position.needsUpdate=true;
+    pf.pt.material.opacity=Math.max(0,.95-pf.t*1.9);
+    if(pf.t>.55){scene.remove(pf.pt);puffs.splice(q,1);}
+  }
+  dust.rotation.y+=dt*.012;
+
+  renderer.render(scene,camera);
+}
+function hurt(n){
+  if(P.dead||GOD)return;
+  P.hp-=n;P.regen=0;el('hurt').className='hurt on';
+  setTimeout(function(){if(P.hp>60)el('hurt').className='hurt';},130);
+  if(P.hp<=0)die();
+}
+function die(){
+  P.dead=true;running=false;
+  if(TC){TC.setEnabled(false,false);TC.reset();}
+  if(document.pointerLockElement)document.exitPointerLock();
+  el('d-round').textContent='Round '+round;el('d-kills').textContent=P.kills;
+  el('d-pts').textContent=P.pts;el('s-dead').hidden=false;
+  el('lb-form').hidden=false; el('btn-submit').disabled=false; el('lb-note').textContent='';
+  lbLoad();
+  // The #touch element went when Faraday's controls came in; this line kept
+  // referencing it, so every death threw and the rest of die() never ran.
+  if(TC){ TC.setEnabled(false,false); TC.reset(); }
+  el('hudwrap').hidden=true;
+}
+function begin(){
+  audio();
+  zombies.forEach(function(z){scene.remove(z.g);});zombies=[];alive=0;round=0;toSpawn=0;between=1.4;
+  BARRIERS.forEach(function(b){ b.planks.forEach(function(pk){ pk.up=true; pk.mesh.visible=true; }); b.rebuildT=0; });
+  doors.forEach(function(d){if(d.open){d.open=false;scene.add(d.grp);walls.push(d.wall);}});
+  // With a map loaded, start on the floor the map found -- begin() runs after
+  // the map callback and was overwriting it with the built-map spawn.
+  if(DAEMAP && MAPSPAWN){ P.pos.set(MAPSPAWN.x, MAPSPAWN.y+EYE, MAPSPAWN.z); }
+  else { P.pos.set(0,EYE,8.0); }
+  P.yaw=(DAEMAP&&MAPSPAWN)?MAPSPAWN.yaw:Math.PI;P.vy=0;P.grounded=true;P.pitch=0;P.hp=100;P.pts=500;P.kills=0;
+  P.gun='pistol';P.ammo=GUNS.pistol.mag;P.reserve=GUNS.pistol.res;
+  P.reloading=0;P.cool=0;P.dead=false;P.aiming=false;P.recoil=0;P.landT=0;P.eye=EYE;setViewModel('pistol');useRealGun();
+  el('s-start').hidden=true;el('s-dead').hidden=true;el('s-pause').hidden=true;
+  paused=false;el('hudwrap').hidden=false;
+  el('hurt').className='hurt';hud();resize();
+  running=true;prev=performance.now();
+  grabMouse();
+}
+/* ---------- ?banner=1 : render the Twitter header from the game itself ----------
+   1500x500, HUD off, a few zombies walking at the camera, the wordmark burnt in.
+   The button composites the WebGL canvas and the text into one 2D canvas and
+   downloads it, so the asset is the actual game rather than a mock-up.        */
+if(/[?&]banner=1/.test(location.search)){
+  var BW=1500, BH=500;
+  var _bannerPoll=setInterval(function(){
+    var b=el('btn-start'); if(!b||b.disabled) return;
+    clearInterval(_bannerPoll);
+    begin(); GOD=true;
+    ['hudwrap','s-start','s-dead','s-pause'].forEach(function(id){ var e=el(id); if(e) e.hidden=true; });
+    var tc=document.getElementById('touch-controls'); if(tc) tc.hidden=true;
+    document.body.classList.remove('touch-mode');
+    if(vm) vm.visible=false;                       // no gun across the shot
+    renderer.setPixelRatio(2);
+    renderer.setSize(BW,BH,false);
+    renderer.domElement.style.cssText='width:'+BW+'px;height:'+BH+'px;max-width:100vw;height:auto';
+    // fov is VERTICAL. At 74 with a 3:1 frame the horizontal field is about
+    // 130 degrees, which stretches everything at the edges -- that is the
+    // "compressed" look, not compression. 38 gives about 91 across.
+    camera.aspect=BW/BH; camera.fov=38; camera.updateProjectionMatrix();
+    resize=function(){};                            // stop the resize handler undoing it
+    // the lobby, looking at the stairs
+    P.pos.set(1, (window.__MAPFLOOR||0)+EYE, 6.8); P.yaw=1.05; P.pitch=-0.02;
+    zombies.forEach(function(z){ scene.remove(z.g); }); zombies=[]; alive=0; toSpawn=0; between=99;
+    // A crowd shambling at you, nearest first. Offsets are along the VIEW, not
+    // along world z -- the first version put all six behind the camera.
+    var fwx=-Math.sin(P.yaw), fwz=-Math.cos(P.yaw);     // forward
+    var rtx= Math.cos(P.yaw), rtz=-Math.sin(P.yaw);     // right
+    // Far enough back that a 256px texture is not magnified into mush: the
+    // nearest was 2.3m away and filled a third of the frame.
+    [[1.1,7.0],[-2.2,8.6],[3.4,10.5],[-4.0,12.5],[1.8,15.0],[-1.0,18.0]].forEach(function(o,i){
+      var zx=P.pos.x + fwx*o[1] + rtx*o[0];
+      var zz2=P.pos.z + fwz*o[1] + rtz*o[0];
+      var zb=makeZombie(100,1,zx,zz2);
+      var fy=mapGroundAt(zx,zz2,P.pos.y-EYE+1.2);
+      zb.g.position.y = (fy===null? P.pos.y-EYE : fy);
+      zb.g.rotation.y = Math.atan2(P.pos.x-zx, P.pos.z-zz2);   // facing you
+      zb.at='in'; zb.bar=null;
+      if(zb.mixer) zb.mixer.update(0.35+i*0.23);      // stagger the stride
+      zombies.push(zb); alive++;
+    });
+    for(var i=0;i<30;i++) tick(performance.now()+i*16);
+    window.__bannerPNG=function(){
+      // Render in the SAME task as the read. Without preserveDrawingBuffer the
+      // buffer is cleared once the browser composites, and drawImage a tick
+      // later copies pure black -- which is exactly what it did.
+      // The fov has to be set here too: tick() eases it back to 74 every frame,
+      // so setting it once at startup achieved nothing.
+      camera.fov=38; camera.aspect=BW/BH; camera.updateProjectionMatrix();
+      renderer.setSize(BW,BH,false);
+      renderer.render(scene,camera);
+      var c=document.createElement('canvas'); c.width=BW*2; c.height=BH*2;
+      var g=c.getContext('2d');
+      g.drawImage(renderer.domElement,0,0,c.width,c.height);
+      g.scale(2,2);
+      // ?notext=1 gives the plain scene: no wordmark, no URL, and none of the
+      // left-hand darkening that was only there to carry the text.
+      var NOTEXT=/[?&]notext=1/.test(location.search);
+      var vig=g.createLinearGradient(0,0,0,BH);
+      vig.addColorStop(0,'rgba(5,4,4,'+(NOTEXT?'.34':'.5')+')');
+      vig.addColorStop(.45,'rgba(5,4,4,0)');
+      vig.addColorStop(1,'rgba(5,4,4,'+(NOTEXT?'.38':'.55')+')');
+      g.fillStyle=vig; g.fillRect(0,0,BW,BH);
+      if(!NOTEXT){
+        // Twitter puts the avatar over the BOTTOM LEFT of a header, so the text
+        // block sits in the upper left and the bottom 150px stays clear.
+        var grad=g.createLinearGradient(0,0,BW*0.78,0);
+        grad.addColorStop(0,'rgba(5,4,4,.93)'); grad.addColorStop(.52,'rgba(5,4,4,.6)');
+        grad.addColorStop(1,'rgba(5,4,4,0)');
+        g.fillStyle=grad; g.fillRect(0,0,BW,BH);
+        g.textAlign='left'; g.textBaseline='alphabetic';
+        var LX=72;
+        g.shadowColor='rgba(0,0,0,.95)'; g.shadowBlur=20;
+        g.fillStyle='#fff';
+        g.font='700 96px Oswald, Impact, "Arial Narrow", sans-serif';
+        g.fillText('BROWSER', LX, 158);
+        g.shadowColor='rgba(155,31,21,.95)'; g.shadowBlur=36;
+        g.fillStyle='#9B1F15';
+        g.font='700 96px Oswald, Impact, "Arial Narrow", sans-serif';
+        g.fillText('ZOMBIES', LX, 250);
+        g.shadowBlur=12; g.shadowColor='rgba(0,0,0,.95)';
+        g.strokeStyle='rgba(233,194,113,.55)'; g.lineWidth=2;
+        g.beginPath(); g.moveTo(LX,282); g.lineTo(LX+408,282); g.stroke();
+        g.fillStyle='#E9C271';
+        g.font='500 32px Oswald, Impact, sans-serif';
+        g.fillText('browserzombies.fun', LX, 326);
+        g.fillStyle='rgba(240,232,217,.72)';
+        g.font='500 22px Oswald, Impact, sans-serif';
+        g.fillText('NO DOWNLOAD  \u00b7  NO INSTALL  \u00b7  PLAY IT IN THE TAB', LX, 362);
+      }
+      return c.toDataURL('image/png');
+    };
+    var dl=document.createElement('a');
+    dl.textContent='Download banner PNG';
+    dl.href='#'; dl.style.cssText='position:fixed;left:14px;bottom:14px;z-index:99;padding:12px 20px;'+
+      'background:#E9C271;color:#090706;font:600 16px Oswald,sans-serif;letter-spacing:2px;'+
+      'text-transform:uppercase;text-decoration:none;border-radius:3px';
+    dl.addEventListener('click',function(e){ e.preventDefault();
+      var a=document.createElement('a'); a.href=window.__bannerPNG();
+      a.download=(/[?&]notext=1/.test(location.search)?'browser-zombies-banner-plain.png':'browser-zombies-banner.png'); a.click(); });
+    document.body.appendChild(dl);
+    window.__BANNERREADY=true;
+  },300);
+  // Timers are suspended while the tab is hidden, so offer a manual trigger.
+  window.__bannerGo=function(){ var b=el('btn-start'); if(b&&!b.disabled){ b.disabled=false; } };
+}
+/* ---------- leaderboard ----------
+   Scores are posted by the client and are therefore forgeable. For a browser
+   game with no accounts that is the honest trade; the server only caps the
+   range so nobody parks a nonsense number at the top forever.              */
+var LB_API='/api/zscore';
+function lbRender(scores, mineTs){
+  var rows=el('lb-rows'); rows.innerHTML='';
+  (scores||[]).slice(0,10).forEach(function(s,i){
+    var tr=document.createElement('tr');
+    if(mineTs && s.ts===mineTs) tr.className='you';
+    [String(i+1), s.name, 'R'+s.round, s.points].forEach(function(v){
+      var td=document.createElement('td'); td.textContent=v; tr.appendChild(td);
+    });
+    rows.appendChild(tr);
+  });
+  el('lb-table').hidden=!(scores&&scores.length);
+}
+function lbLoad(){
+  fetch('/api/zscores?limit=10',{cache:'no-store'})
+    .then(function(r){ return r.json(); })
+    .then(function(d){ lbRender(d.scores); })
+    .catch(function(){ /* a missing leaderboard must not break the death screen */ });
+}
+(function(){
+  var f=el('lb-form'), name=el('lb-name'), note=el('lb-note'), btn=el('btn-submit');
+  try{ name.value=(localStorage.getItem('bz-name')||''); }catch(e){}
+  f.addEventListener('submit',function(e){
+    e.preventDefault();
+    var n=(name.value||'').trim();
+    if(!n){ note.textContent='Enter a name first'; return; }
+    btn.disabled=true; note.textContent='Sending\u2026';
+    try{ localStorage.setItem('bz-name',n); }catch(e2){}
+    fetch(LB_API,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name:n,round:round,kills:P.kills,points:P.pts,map:DAEMAP||'built'})})
+      .then(function(r){ return r.json().then(function(d){ return {ok:r.ok,d:d}; }); })
+      .then(function(res){
+        if(!res.ok){ note.textContent=res.d.error||'Could not save'; btn.disabled=false; return; }
+        note.textContent='#'+res.d.rank+' of all time';
+        f.hidden=true;
+        lbRender(res.d.scores, res.d.scores && res.d.scores.length ? undefined : undefined);
+        // mark the row that is yours: same name, round and points, newest first
+        var rows=el('lb-rows').children;
+        for(var i=0;i<rows.length;i++){
+          var c=rows[i].children;
+          if(c[1].textContent===n && c[2].textContent==='R'+round && +c[3].textContent===P.pts){
+            rows[i].className='you'; break;
+          }
+        }
+      })
+      .catch(function(){ note.textContent='Offline \u2014 score not saved'; btn.disabled=false; });
+  });
+})();
+el('btn-start').addEventListener('click',begin);
+el('btn-again').addEventListener('click',begin);
+el('p-sens').addEventListener('input',function(){ setLookSens(this.value,true); });
+var _ts=document.getElementById('touch-sensitivity');
+if(_ts) _ts.addEventListener('input',function(){ setLookSens(this.value); });
+setLookSens(LOOKSENS);
+el('btn-resume').addEventListener('click',function(){ setPaused(false); });
+el('btn-restart').addEventListener('click',function(){ paused=false; el('s-pause').hidden=true; begin(); });
+el('hint').textContent = TOUCH
+  ? 'Stick to move \u00b7 drag to look \u00b7 USE to repair'
+  : 'WASD \u00b7 mouse \u00b7 R reload \u00b7 E use \u00b7 V knife';
+// checkNear used to run on a setInterval. Browsers suspend timers in a
+// backgrounded tab, so the use prompt could be stale or missing exactly when
+// the tab came back. It runs off the frame clock now.
+var nearT=0;
+// Six viewpoints drawn into one frame, so a whole room can be judged from a
+// single screenshot instead of one round trip per angle.
+var TOURVIEWS=[];
+window.__tour=function(views){ TOURVIEWS=views||[]; return TOURVIEWS.length; };
+// An overhead floor plan with coordinates on it. Six camera angles tell you what
+// a room LOOKS like; this tells you where it IS, which is what you need to place
+// a spawn, a door or a wall buy. __plan() to draw, __plan(0) to clear.
+// cutY slices the roof off: everything above it is hidden.
+window.__plan=function(cutY,ext){
+  ['planbox','planaxes'].forEach(function(id){var o=document.getElementById(id); if(o)o.remove();});
+  if(window.__planMats){ window.__planMats.forEach(function(m){ m.clippingPlanes=null; m.needsUpdate=true; }); window.__planMats=null; }
+  if(cutY===0) return 'cleared';
+  cutY = cutY || (P.pos.y+1.2); ext = ext || 26;
+  var W=780,H=560, aspect=W/H;
+  function mk(id,zi,pe){ var c=document.createElement('canvas'); c.id=id; c.width=W; c.height=H;
+    c.style.cssText='position:fixed;left:10px;top:20px;z-index:'+zi+';'+(pe?'pointer-events:none;':'border:2px solid #0f0;background:#111;');
+    document.body.appendChild(c); return c; }
+  var cv=mk('planbox',99998,false), ov=mk('planaxes',99999,true);
+  var r=new THREE.WebGLRenderer({canvas:cv,antialias:true});
+  r.setSize(W,H,false); r.setClearColor(0x101014,1); r.localClippingEnabled=true;
+  var clip=new THREE.Plane(new THREE.Vector3(0,-1,0), cutY), mats=[];
+  scene.traverse(function(o){ if(!o.isMesh)return; [].concat(o.material).forEach(function(m){
+    if(m && mats.indexOf(m)<0){ mats.push(m); m.clippingPlanes=[clip]; m.needsUpdate=true; } }); });
+  window.__planMats=mats;
+  var cam=new THREE.OrthographicCamera(-ext*aspect,ext*aspect,ext,-ext,0.1,400);
+  cam.position.set(0,cutY+120,0); cam.up.set(0,0,-1); cam.lookAt(0,0,0); cam.updateMatrixWorld(true);
+  // The night shell is a box seen from the INSIDE. Looking down from above it,
+  // all you get is its far wall -- a black rectangle over the whole plan.
+  var hid=[]; scene.traverse(function(o){ if(o.userData&&o.userData.isShell&&o.visible){ o.visible=false; hid.push(o); } });
+  var fog=scene.fog; scene.fog=null;
+  r.render(scene,cam);
+  scene.fog=fog; hid.forEach(function(o){ o.visible=true; });
+  var g=ov.getContext('2d');
+  function px(x){ return (x+ext*aspect)/(2*ext*aspect)*W; }
+  function py(z){ return H-(z+ext)/(2*ext)*H; }
+  g.strokeStyle='rgba(0,255,0,.3)'; g.fillStyle='#0f0'; g.font='bold 11px monospace';
+  for(var x=-40;x<=40;x+=5){ g.beginPath(); g.moveTo(px(x),0); g.lineTo(px(x),H); g.stroke(); g.fillText('x'+x,px(x)+2,12); }
+  for(var z=-40;z<=40;z+=5){ g.beginPath(); g.moveTo(0,py(z)); g.lineTo(W,py(z)); g.stroke(); g.fillText('z'+z,2,py(z)-2); }
+  (MAPSPAWNPTS||[]).forEach(function(s){ g.fillStyle='rgba(255,60,60,.8)'; g.beginPath(); g.arc(px(s.x),py(s.z),3,0,7); g.fill(); });
+  g.fillStyle='#ff0'; g.beginPath(); g.arc(px(P.pos.x),py(P.pos.z),7,0,7); g.fill();
+  return 'plan: cut y<'+cutY.toFixed(1)+', yellow=player, red=zombie spawns';
+};
+var _tourCam=new THREE.PerspectiveCamera(74,1,0.25,600);
+var _origTick=tick;
+tick=function(now){
+  if(TOURVIEWS.length){
+    if(!MANUAL) requestAnimationFrame(tick);
+    var w=app.clientWidth,h=app.clientHeight,cols=3,rows=2;
+    var cw=Math.floor(w/cols),ch=Math.floor(h/rows);
+    renderer.setScissorTest(true);
+    for(var i=0;i<Math.min(6,TOURVIEWS.length);i++){
+      var v=TOURVIEWS[i];
+      var cx=(i%cols)*cw, cy=h-(Math.floor(i/cols)+1)*ch;
+      renderer.setViewport(cx,cy,cw,ch);
+      renderer.setScissor(cx,cy,cw,ch);
+      _tourCam.aspect=cw/ch; _tourCam.updateProjectionMatrix();
+      _tourCam.position.set(v[0],v[1],v[2]);
+      _tourCam.quaternion.setFromEuler(new THREE.Euler(v[4]||0,v[3]||0,0,'YXZ'));
+      renderer.render(scene,_tourCam);
+    }
+    renderer.setScissorTest(false);
+    renderer.setViewport(0,0,w,h);
+    return;
+  }
+  _origTick(now);
+};
+resize();tick(performance.now());
+
+// Debug handle. The game lives in a closure, so without this there is no way
+// to ask it where the camera is or whether the models actually arrived --
+// which cost several blind round trips before the game was hosted anywhere.
+window.__z={
+  info:function(){
+    return {
+      player:{x:+P.pos.x.toFixed(2),y:+P.pos.y.toFixed(2),z:+P.pos.z.toFixed(2),
+              yaw:+P.yaw.toFixed(2),pitch:+P.pitch.toFixed(2),hp:P.hp,running:running},
+      models:{zombie:!!ZPROTO,gun:!!GUNPROTO,pendingTex:pending,pendingModels:modelsPending},
+      round:round,alive:alive,toSpawn:toSpawn,between:+between.toFixed(2),spawnT:+spawnT.toFixed(2),zombies:zombies.length,
+      firstZombie:zombies[0]?{x:+zombies[0].g.position.x.toFixed(2),
+        z:+zombies[0].g.position.z.toFixed(2),
+        bones:Object.keys(zombies[0].bones||{}),
+        scale:+zombies[0].g.scale.x.toFixed(3)}:null,
+      sceneChildren:scene.children.length, walls:walls.length,
+      drawCalls:renderer.info.render.calls, tris:renderer.info.render.triangles
+    };
+  },
+  fly:function(x,y,z,yaw,pitch){ P.pos.set(x,y,z); if(yaw!==undefined)P.yaw=yaw; if(pitch!==undefined)P.pitch=pitch; P.vy=0; P.grounded=true; },
+  mapinfo:function(){ var m=window.__MAPINFO||null; if(m) m.floorY=window.__MAPFLOOR; return m; },
+  // Run the game loop by hand, n frames of dt seconds, independent of rAF.
+  step:function(n,dt){ dt=dt||1/60; MANUAL=true;
+    try{ for(var i=0;i<n;i++){ prev=performance.now()-dt*1000; tick(performance.now()); } }
+    finally{ MANUAL=false; }
+    return {round:round, zombies:zombies.length, hp:P.hp, pts:P.pts}; },
+  bars:function(){ return BARRIERS.map(function(b){
+    return {at:[+b.x.toFixed(1),+b.y.toFixed(1),+b.z.toFixed(1)],
+            boards:barrierBoardsLeft(b)+'/'+b.planks.length,
+            inside:[+b.inX.toFixed(1),+b.inZ.toFixed(1)],
+            outside:[+b.outX.toFixed(1),+b.outZ.toFixed(1)],
+            floorY:+b.floorY.toFixed(2)}; }); },
+  zstate:function(){ return zombies.map(function(z){
+    return {at:z.at, boards:z.bar?barrierBoardsLeft(z.bar):'-',
+            p:[+z.g.position.x.toFixed(1),+z.g.position.y.toFixed(2),+z.g.position.z.toFixed(1)]}; }); },
+  // The collision grid, so a walk can be simulated without waiting on rAF --
+  // which the browser suspends outright while the window is hidden.
+  col:{ ground:function(x,z,fromY){ return mapGroundAt(x,z,fromY); },
+        blocked:function(x,y,z,dx,dz){ return mapBlocked(x,y,z,dx,dz); },
+        ceil:function(x,z,fy){ return mapCeilAt(x,z,fy); },
+        grid:function(){ return CG; } },
+  tp:function(x,z,yaw){ P.pos.x=x; P.pos.z=z; if(yaw!==undefined)P.yaw=yaw; },
+  god:function(on){ GOD=(on!==false); P.hp=100; return GOD; },
+  // Tune the viewmodel live rather than redeploying for each guess.
+  zcal:function(){ return ZPROTO?ZPROTO.userData.calib:null; },
+  zscale:function(k,dy){
+    if(!ZPROTO)return 'no model';
+    var r=ZPROTO.children[0];
+    if(k!==undefined) r.scale.setScalar(k);
+    if(dy!==undefined) r.position.y=dy;
+    scene.children.forEach(function(c){ if(c.userData&&c.userData.isZombie){
+      var rr=c.children[0]; if(rr&&rr.isObject3D&&k!==undefined) rr.scale.setScalar(k);
+      if(rr&&dy!==undefined) rr.position.y=dy; }});
+    return {scale:+r.scale.x.toFixed(5), y:+r.position.y.toFixed(3)};
+  },
+  novm:function(on){ if(on!==undefined) vm.visible=(on===false); return {vmVisible:vm.visible,
+    children:vm.children.map(function(c){return {t:c.type,v:c.visible,
+      s:+c.scale.x.toFixed(3)};})}; },
+  stage:function(sc,x,y,z,ry){
+    if(!STAGEOBJ)return 'no stage';
+    if(sc!==undefined)STAGEOBJ.scale.setScalar(sc);
+    if(x!==undefined)STAGEOBJ.position.set(x,y,z);
+    if(ry!==undefined)STAGEOBJ.rotation.y=ry;
+    return {scale:+STAGEOBJ.scale.x.toFixed(3),
+      pos:[+STAGEOBJ.position.x.toFixed(1),+STAGEOBJ.position.y.toFixed(1),+STAGEOBJ.position.z.toFixed(1)],
+      rotY:+STAGEOBJ.rotation.y.toFixed(2)};
+  },
+  props:function(){ return Object.keys(PROPS); },
+  seats:function(y,sc){
+    if(!SEATS.length)return 'none';
+    SEATS.forEach(function(m){ if(y!==undefined)m.position.y=y; if(sc!==undefined)m.scale.setScalar(sc); });
+    return {count:SEATS.length, y:+SEATS[0].position.y.toFixed(2), scale:+SEATS[0].scale.x.toFixed(3)};
+  },
+  gun:function(sc,x,y,zz,rx,ry,rz){
+    if(!vmParts.real) return 'no model';
+    var g=vmParts.real;
+    if(sc!==undefined) g.scale.setScalar(sc);
+    if(x!==undefined) g.position.set(x,y,zz);
+    if(rx!==undefined) g.rotation.set(rx,ry,rz);
+    return {scale:+g.scale.x.toFixed(4),
+            pos:[+g.position.x.toFixed(3),+g.position.y.toFixed(3),+g.position.z.toFixed(3)],
+            rot:[+g.rotation.x.toFixed(2),+g.rotation.y.toFixed(2),+g.rotation.z.toFixed(2)]};
+  },
+  zombies_:function(){
+    var out=[];
+    scene.children.forEach(function(c){ if(c.userData&&c.userData.isZombie){
+      out.push({x:+c.position.x.toFixed(1),z:+c.position.z.toFixed(1),vis:c.visible}); }});
+    return out;
+  },
+  light:function(mult){ scene.traverse(function(o){ if(o.isPointLight) o.intensity*=mult; }); },
+  // Total light reaching a surface, and what a mid-grey renders as. Over 1 and
+  // things clip to white.
+  exposure:function(v){ if(v!==undefined) renderer.toneMappingExposure=v; return renderer.toneMappingExposure; },
+  // Percentage of the frame that is a genuine gap in the model. Hides the
+  // shell and paints the void magenta for one frame.
+  holes:function(){
+    var old=scene.background, oldFog=scene.fog, hid=[];
+    scene.traverse(function(o){ if(o.userData&&o.userData.isShell&&o.visible){o.visible=false;hid.push(o);} });
+    scene.background=new THREE.Color(0xFF00FF); scene.fog=null;
+    renderer.render(scene,camera);
+    var gl=renderer.getContext(), W=renderer.domElement.width, H=renderer.domElement.height;
+    var px=new Uint8Array(W*H*4); gl.readPixels(0,0,W,H,gl.RGBA,gl.UNSIGNED_BYTE,px);
+    var n=0,t=0;
+    for(var y=0;y<H;y+=3) for(var x=0;x<W;x+=3){ var i=((H-1-y)*W+x)*4; t++;
+      if(px[i]>200&&px[i+1]<60&&px[i+2]>200) n++; }
+    hid.forEach(function(o){o.visible=true;}); scene.background=old; scene.fog=oldFog;
+    renderer.render(scene,camera);
+    return +(n/t*100).toFixed(2);
+  },
+  outside:function(x,z,fy){ return cgOutsideAt(x,z,fy); },
+  // Buy a wall gun without needing points, for checking the viewmodel swap.
+  give:function(key){ var g=GUNS[key]; if(!g) return 'no such gun';
+    P.gun=key; P.ammo=g.mag; P.reserve=g.res; P.reloading=0;
+    setViewModel(key); hud(); return g.name; },
+  vminfo:function(){ var n=0,t=0;
+    camera.traverse(function(o){ if(o.isMesh){ n++;
+      t += (o.geometry.index?o.geometry.index.count:o.geometry.attributes.position.count)/3; } });
+    return {meshes:n, tris:Math.round(t), holding:vmParts.realKind||null}; },
+  navinfo:function(){ return {cellsReachable:NAVN, built:!!NAV}; },
+  inplay:function(x,z){ return cgInPlay(x,z); },
+  lightsum:function(){ var a=0,h=0,d=0;
+    scene.traverse(function(o){ if(o.isAmbientLight)a+=o.intensity;
+      else if(o.isHemisphereLight)h+=o.intensity; else if(o.isDirectionalLight)d+=o.intensity; });
+    return {ambient:+a.toFixed(2), hemi:+h.toFixed(2), dir:+d.toFixed(2), total:+(a+h+d).toFixed(2),
+            exposure:renderer.toneMappingExposure}; },
+  look:function(yaw,pitch){ P.yaw=yaw; if(pitch!==undefined)P.pitch=pitch; },
+  spawn:function(){ spawnOne(); },
+  scene:scene, camera:camera
+};
+})();
+</script>
